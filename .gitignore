@@ -1,0 +1,25 @@
+# Binaries
+/tunnel9
+/release/
+
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+/vendor/
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+commands
+
+# Air
+tmp/ 
+**/*.bak

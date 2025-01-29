@@ -11,7 +11,7 @@ import (
 
 	"tunnel9/internal/config"
 
-	"github.com/kevinburke/ssh_config"
+	"github.com/sio2boss/ssh_config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -146,6 +146,18 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	}
 }
 
+func isPortAvailable(bindAddress string, port int) bool {
+	if bindAddress == "" {
+		bindAddress = "localhost"
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bindAddress, port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
 func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) {
 	defer localConnection.Close()
 
@@ -162,7 +174,8 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	t.logf(fmt.Sprintf("connecting to SSH server: %s", net.JoinHostPort(sshHost, port)))
 	t.updateStatus("connecting", "connecting to SSH server")
 	dialer := net.Dialer{
-		Timeout: 10 * time.Second,
+		LocalAddr: &net.TCPAddr{IP: net.ParseIP(t.Config.BindAddress)},
+		Timeout:   10 * time.Second,
 	}
 	conn, err := dialer.Dial("tcp", net.JoinHostPort(sshHost, port))
 	if err != nil {
@@ -253,15 +266,6 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 
 	t.logf("connection closed, waiting for new connection")
 	t.updateStatus("active", "waiting for traffic")
-}
-
-func isPortAvailable(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
-	if err != nil {
-		return false
-	}
-	ln.Close()
-	return true
 }
 
 func (t *Tunnel) getSSHConfig() (*ssh.ClientConfig, error) {

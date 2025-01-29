@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
 	github.com/google/uuid v1.6.0
-	github.com/kevinburke/ssh_config v1.2.0
+	github.com/sio2boss/ssh_config v0.0.0-20250129161636-b665f588968b
 	golang.org/x/crypto v0.32.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -30,5 +30,3 @@ require (
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 )
-
-replace github.com/kevinburke/ssh_config => ../ssh_config

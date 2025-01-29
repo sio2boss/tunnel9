@@ -85,7 +85,7 @@ func (tm *TunnelManager) CreateTunnel(id string, config config.TunnelConfig) *Tu
 
 func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
 	// Check if port is available
-	if !isPortAvailable(tunnel.Config.LocalPort) {
+	if !isPortAvailable(tunnel.Config.BindAddress, tunnel.Config.LocalPort) {
 		tunnel.errorf("port already in use")
 		return fmt.Errorf("port already in use")
 	}
@@ -98,7 +98,11 @@ func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
 	}
 
 	// Start local listener
-	tunnel.Listener, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tunnel.Config.LocalPort))
+	bindAddr := tunnel.Config.BindAddress
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+	tunnel.Listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", bindAddr, tunnel.Config.LocalPort))
 	if err != nil {
 		tunnel.errorf("failed to listen on port %d", tunnel.Config.LocalPort)
 		return fmt.Errorf("failed to listen on port %d", tunnel.Config.LocalPort)

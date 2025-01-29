@@ -138,6 +138,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 		"STATUS",
 		"NAME",
 		"LOCAL",
+		"BIND",
 		"HOST",
 		"REMOTE",
 		"BASTION",
@@ -150,11 +151,12 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 		{Title: baseColumns[0], Width: 8},
 		{Title: baseColumns[1], Width: 25},
 		{Title: baseColumns[2], Width: 7},
-		{Title: baseColumns[3], Width: 30},
-		{Title: baseColumns[4], Width: 8},
-		{Title: baseColumns[5], Width: 30},
-		{Title: baseColumns[6], Width: 12},
-		{Title: baseColumns[7], Width: 40},
+		{Title: baseColumns[3], Width: 15},
+		{Title: baseColumns[4], Width: 30},
+		{Title: baseColumns[5], Width: 8},
+		{Title: baseColumns[6], Width: 30},
+		{Title: baseColumns[7], Width: 12},
+		{Title: baseColumns[8], Width: 40},
 	}
 
 	t := table.New(
@@ -201,7 +203,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 		viewport:     vp,
 		filterLogs:   false,
 		showDialog:   false,
-		dialogFields: make([]dialogField, 10),
+		dialogFields: make([]dialogField, 12),
 		activeField:  0,
 		loader:       loader,
 		selectedTags: make(map[string]bool),
@@ -268,6 +270,10 @@ func (a *App) updateTableRows() {
 		// Mask sensitive information in privacy mode
 		remoteHost := t.Config.RemoteHost
 		bastionHost := t.Config.Bastion.Host
+		bindAddr := t.Config.BindAddress
+		if bindAddr == "" {
+			bindAddr = "0.0.0.0"
+		}
 		if a.privacyMode {
 			if remoteHost != "" {
 				remoteHost = "********"
@@ -275,12 +281,16 @@ func (a *App) updateTableRows() {
 			if bastionHost != "" {
 				bastionHost = "********"
 			}
+			if bindAddr != "0.0.0.0" {
+				bindAddr = "********"
+			}
 		}
 
 		rows[i] = table.Row{
 			status,
 			t.Config.Name,
 			fmt.Sprintf("%*d", 7, t.Config.LocalPort),
+			bindAddr,
 			remoteHost,
 			fmt.Sprintf("%*d", 8, t.Config.RemotePort),
 			bastionHost,
@@ -415,28 +425,47 @@ func parseSshString(sshStr string) (*config.TunnelConfig, error) {
 		return nil, fmt.Errorf("no port mapping (-L) found")
 	}
 
-	// Parse port mapping (localPort:remoteHost:remotePort)
+	// Parse port mapping (bindAddr:localPort:remoteHost:remotePort) or (localPort:remoteHost:remotePort)
 	portParts := strings.Split(portMapping, ":")
-	if len(portParts) != 3 {
+	var localPort int
+	var remoteHost string
+	var remotePort int
+	var bindAddr string
+	var err error
+
+	switch len(portParts) {
+	case 4: // With bind address
+		bindAddr = portParts[0]
+		localPort, err = strconv.Atoi(portParts[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid local port: %v", err)
+		}
+		remoteHost = portParts[2]
+		remotePort, err = strconv.Atoi(portParts[3])
+		if err != nil {
+			return nil, fmt.Errorf("invalid remote port: %v", err)
+		}
+	case 3: // Without bind address
+		localPort, err = strconv.Atoi(portParts[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid local port: %v", err)
+		}
+		remoteHost = portParts[1]
+		remotePort, err = strconv.Atoi(portParts[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid remote port: %v", err)
+		}
+	default:
 		return nil, fmt.Errorf("invalid port mapping format")
 	}
 
-	localPort, err := strconv.Atoi(portParts[0])
-	if err != nil {
-		return nil, fmt.Errorf("invalid local port: %v", err)
-	}
-
-	remotePort, err := strconv.Atoi(portParts[2])
-	if err != nil {
-		return nil, fmt.Errorf("invalid remote port: %v", err)
-	}
-
 	config := config.TunnelConfig{
-		Name:       fmt.Sprintf("%s-%d", portParts[1], localPort),
-		LocalPort:  localPort,
-		RemotePort: remotePort,
-		RemoteHost: portParts[1],
-		User:       os.Getenv("USER"), // Default to current user
+		Name:        fmt.Sprintf("%s-%d", remoteHost, localPort),
+		LocalPort:   localPort,
+		RemotePort:  remotePort,
+		RemoteHost:  remoteHost,
+		User:        os.Getenv("USER"), // Default to current user
+		BindAddress: bindAddr,
 	}
 
 	// Check if bastion host is provided (last argument contains @)
@@ -447,7 +476,16 @@ func parseSshString(sshStr string) (*config.TunnelConfig, error) {
 			return nil, fmt.Errorf("invalid user@host format")
 		}
 		config.User = userHostParts[0]
-		config.Bastion.Host = userHostParts[1]
+
+		// Parse host:port format for bastion
+		hostParts := strings.Split(userHostParts[1], ":")
+		if len(hostParts) == 2 {
+			config.Bastion.Host = hostParts[0]
+			config.Bastion.Port = hostParts[1]
+		} else {
+			config.Bastion.Host = userHostParts[1]
+			config.Bastion.Port = "22" // Default port
+		}
 		config.Bastion.User = userHostParts[0]
 	}
 
@@ -459,12 +497,14 @@ func (a *App) initDialog(mode dialogMode) {
 	a.dialogFields = []dialogField{
 		{label: "Input Mode", value: "fields", cursor: 0, isHidden: true},
 		{label: "SSH Command", value: "", cursor: 0, isHidden: true},
+		{label: "Bind Address (optional)", value: "", cursor: 0},
 		{label: "Local Port", value: "", cursor: 0},
 		{label: "Remote Host", value: "", cursor: 0},
 		{label: "Remote Port", value: "", cursor: 0},
 		{label: "User", value: "", cursor: 0},
-		{label: "Bastion Host", value: "", cursor: 0},
-		{label: "Bastion User", value: "", cursor: 0},
+		{label: "Bastion Host (optional)", value: "", cursor: 0},
+		{label: "Bastion Port (optional)", value: "", cursor: 0},
+		{label: "Bastion User (optional)", value: "", cursor: 0},
 		{label: "Name", value: "", cursor: 0},
 		{label: "Tag", value: "", cursor: 0},
 	}
@@ -509,44 +549,65 @@ func (a *App) initDialog(mode dialogMode) {
 		selected := &a.tunnels[actualIndex]
 
 		// Fill in both SSH command and individual fields
-		sshCmd := fmt.Sprintf("ssh -N -L %d:%s:%d",
-			selected.Config.LocalPort,
-			selected.Config.RemoteHost,
-			selected.Config.RemotePort)
+		var sshCmd string
+		if selected.Config.BindAddress != "" {
+			sshCmd = fmt.Sprintf("ssh -N -L %s:%d:%s:%d",
+				selected.Config.BindAddress,
+				selected.Config.LocalPort,
+				selected.Config.RemoteHost,
+				selected.Config.RemotePort)
+		} else {
+			sshCmd = fmt.Sprintf("ssh -N -L %d:%s:%d",
+				selected.Config.LocalPort,
+				selected.Config.RemoteHost,
+				selected.Config.RemotePort)
+		}
 		if selected.Config.Bastion.Host != "" {
-			sshCmd += fmt.Sprintf(" %s@%s",
+			bastionPort := selected.Config.Bastion.Port
+			if bastionPort == "" {
+				bastionPort = "22"
+			}
+			sshCmd += fmt.Sprintf(" %s@%s:%s",
 				selected.Config.Bastion.User,
-				selected.Config.Bastion.Host)
+				selected.Config.Bastion.Host,
+				bastionPort)
 		}
 
 		a.dialogFields[1].value = sshCmd
 		a.dialogFields[1].cursor = len(sshCmd)
-		a.dialogFields[2].value = fmt.Sprintf("%d", selected.Config.LocalPort)
-		a.dialogFields[2].cursor = len(a.dialogFields[2].value)
-		a.dialogFields[3].value = selected.Config.RemoteHost
-		a.dialogFields[3].cursor = len(selected.Config.RemoteHost)
-		a.dialogFields[4].value = fmt.Sprintf("%d", selected.Config.RemotePort)
-		a.dialogFields[4].cursor = len(a.dialogFields[4].value)
-		a.dialogFields[5].value = selected.Config.User
-		a.dialogFields[5].cursor = len(selected.Config.User)
-		a.dialogFields[6].value = selected.Config.Bastion.Host
-		a.dialogFields[6].cursor = len(selected.Config.Bastion.Host)
-		a.dialogFields[7].value = selected.Config.Bastion.User
-		a.dialogFields[7].cursor = len(selected.Config.Bastion.User)
-		a.dialogFields[8].value = selected.Config.Name
-		a.dialogFields[8].cursor = len(selected.Config.Name)
-		a.dialogFields[9].value = selected.Config.Tag
-		a.dialogFields[9].cursor = len(selected.Config.Tag)
+		a.dialogFields[2].value = selected.Config.BindAddress
+		a.dialogFields[2].cursor = len(selected.Config.BindAddress)
+		a.dialogFields[3].value = fmt.Sprintf("%d", selected.Config.LocalPort)
+		a.dialogFields[3].cursor = len(a.dialogFields[3].value)
+		a.dialogFields[4].value = selected.Config.RemoteHost
+		a.dialogFields[4].cursor = len(selected.Config.RemoteHost)
+		a.dialogFields[5].value = fmt.Sprintf("%d", selected.Config.RemotePort)
+		a.dialogFields[5].cursor = len(a.dialogFields[5].value)
+		a.dialogFields[6].value = selected.Config.User
+		a.dialogFields[6].cursor = len(selected.Config.User)
+		a.dialogFields[7].value = selected.Config.Bastion.Host
+		a.dialogFields[7].cursor = len(selected.Config.Bastion.Host)
+		a.dialogFields[8].value = selected.Config.Bastion.Port
+		if a.dialogFields[8].value == "" {
+			a.dialogFields[8].value = "22"
+		}
+		a.dialogFields[8].cursor = len(a.dialogFields[8].value)
+		a.dialogFields[9].value = selected.Config.Bastion.User
+		a.dialogFields[9].cursor = len(selected.Config.Bastion.User)
+		a.dialogFields[10].value = selected.Config.Name
+		a.dialogFields[10].cursor = len(selected.Config.Name)
+		a.dialogFields[11].value = selected.Config.Tag
+		a.dialogFields[11].cursor = len(selected.Config.Tag)
 
 		// If tunnel is active, hide all fields except name and tag
 		if selected.Status == "active" {
 			a.dialogFields[0].isHidden = true
 			a.dialogFields[1].isHidden = true
-			for i := 2; i <= 7; i++ {
+			for i := 2; i <= 9; i++ {
 				a.dialogFields[i].isHidden = true
 			}
 			// Set initial active field to name since earlier fields are hidden
-			a.activeField = 8
+			a.activeField = 10
 		}
 	}
 }
@@ -560,8 +621,8 @@ func (a *App) handleDialogSubmit() {
 		selected := &a.tunnels[a.editingIndex]
 		if selected.Status == "active" {
 			// Only update name and tag for active tunnels
-			selected.Config.Name = a.dialogFields[8].value
-			selected.Config.Tag = a.dialogFields[9].value
+			selected.Config.Name = a.dialogFields[10].value
+			selected.Config.Tag = a.dialogFields[11].value
 			a.logf("Updated tunnel name/tag: %s", selected.Config.Name)
 			a.updateTableRows()
 			a.saveConfig()
@@ -579,12 +640,12 @@ func (a *App) handleDialogSubmit() {
 		}
 	} else {
 		// Parse from individual fields
-		localPort, err := strconv.Atoi(a.dialogFields[2].value)
+		localPort, err := strconv.Atoi(a.dialogFields[3].value)
 		if err != nil {
 			a.errorLog = append(a.errorLog, "Invalid local port")
 			return
 		}
-		remotePort, err := strconv.Atoi(a.dialogFields[4].value)
+		remotePort, err := strconv.Atoi(a.dialogFields[5].value)
 		if err != nil {
 			a.errorLog = append(a.errorLog, "Invalid remote port")
 			return
@@ -595,18 +656,22 @@ func (a *App) handleDialogSubmit() {
 			User string `yaml:"user"`
 			Port string `yaml:"port,omitempty"`
 		}
-		if a.dialogFields[6].value != "" && a.dialogFields[7].value != "" {
-			bastion.Host = a.dialogFields[6].value
-			bastion.User = a.dialogFields[7].value
+		if a.dialogFields[7].value != "" && a.dialogFields[9].value != "" {
+			bastion.Host = a.dialogFields[7].value
+			bastion.User = a.dialogFields[9].value
 			bastion.Port = a.dialogFields[8].value
+			if bastion.Port == "" {
+				bastion.Port = "22"
+			}
 		}
 
 		updatedConfig = &config.TunnelConfig{
-			LocalPort:  localPort,
-			RemoteHost: a.dialogFields[3].value,
-			RemotePort: remotePort,
-			User:       a.dialogFields[5].value,
-			Bastion:    bastion,
+			LocalPort:   localPort,
+			RemoteHost:  a.dialogFields[4].value,
+			RemotePort:  remotePort,
+			User:        a.dialogFields[6].value,
+			BindAddress: a.dialogFields[2].value,
+			Bastion:     bastion,
 		}
 
 		// Set default name if not provided
@@ -616,10 +681,10 @@ func (a *App) handleDialogSubmit() {
 	}
 
 	// Set name and tag from the common fields
-	if a.dialogFields[8].value != "" {
-		updatedConfig.Name = a.dialogFields[8].value
+	if a.dialogFields[10].value != "" {
+		updatedConfig.Name = a.dialogFields[10].value
 	}
-	updatedConfig.Tag = a.dialogFields[9].value
+	updatedConfig.Tag = a.dialogFields[11].value
 
 	if a.dialogMode == modeEdit {
 		// Update existing tunnel
@@ -709,14 +774,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if a.dialogFields[0].value == "ssh" {
 						a.dialogFields[0].value = "fields"
 						// Show individual fields
-						for i := 2; i <= 7; i++ {
+						for i := 2; i <= 9; i++ {
 							a.dialogFields[i].isHidden = false
 						}
 						a.dialogFields[1].isHidden = true // Hide SSH command
 					} else {
 						a.dialogFields[0].value = "ssh"
 						// Hide individual fields
-						for i := 2; i <= 7; i++ {
+						for i := 2; i <= 9; i++ {
 							a.dialogFields[i].isHidden = true
 						}
 						a.dialogFields[1].isHidden = false // Show SSH command
@@ -1174,15 +1239,17 @@ func (a *App) sortTunnels() {
 			less = a.tunnels[i].Config.Name < a.tunnels[j].Config.Name
 		case 2: // Local Port
 			less = a.tunnels[i].Config.LocalPort < a.tunnels[j].Config.LocalPort
-		case 3: // Host
+		case 3: // Bind
+			less = a.tunnels[i].Config.BindAddress < a.tunnels[j].Config.BindAddress
+		case 4: // Host
 			less = a.tunnels[i].Config.RemoteHost < a.tunnels[j].Config.RemoteHost
-		case 4: // Remote Port
+		case 5: // Remote Port
 			less = a.tunnels[i].Config.RemotePort < a.tunnels[j].Config.RemotePort
-		case 5: // Bastion
+		case 6: // Bastion
 			less = a.tunnels[i].Config.Bastion.Host < a.tunnels[j].Config.Bastion.Host
-		case 6: // Tag
+		case 7: // Tag
 			less = a.tunnels[i].Config.Tag < a.tunnels[j].Config.Tag
-		case 7: // Message
+		case 8: // Message
 			less = a.tunnels[i].Metrics < a.tunnels[j].Metrics
 		}
 		if rev {
@@ -1290,7 +1357,7 @@ func (a *App) View() string {
 		}
 
 		if a.dialogFields[0].value == "ssh" {
-			content += "\nFormat: ssh -N -L localPort:remoteHost:remotePort [user@bastion]\n"
+			content += "\nFormat: ssh -N -L [bindAddress:]localPort:remoteHost:remotePort [user@host[:port]]\n"
 		}
 
 		content += "\n↑/↓: Change field • Enter: Save • Esc/Ctrl+C: Cancel • /: Toggle SSH mode"

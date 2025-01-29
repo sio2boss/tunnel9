@@ -77,6 +77,7 @@ type App struct {
 	privacyMode       bool
 	logCursor         int  // Track position in logs for scrolling
 	autoScroll        bool // Whether to auto-scroll to bottom
+	isWideMode        bool // Whether to show wide or compact view
 }
 
 func convertConfigsToRecords(configs []config.TunnelConfig) []TunnelRecord {
@@ -133,7 +134,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 
 	tunnels := convertConfigsToRecords(configs)
 
-	// Store base column titles
+	// Store base column titles for both wide and compact modes
 	baseColumns := []string{
 		"STATUS",
 		"NAME",
@@ -146,17 +147,13 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 		"MESSAGE",
 	}
 
-	// Create columns with initial widths
+	// Create columns with initial widths for compact mode
 	columns := []table.Column{
-		{Title: baseColumns[0], Width: 8},
-		{Title: baseColumns[1], Width: 25},
-		{Title: baseColumns[2], Width: 7},
-		{Title: baseColumns[3], Width: 15},
-		{Title: baseColumns[4], Width: 30},
-		{Title: baseColumns[5], Width: 8},
-		{Title: baseColumns[6], Width: 30},
-		{Title: baseColumns[7], Width: 12},
-		{Title: baseColumns[8], Width: 40},
+		{Title: baseColumns[0], Width: 8},  // STATUS
+		{Title: baseColumns[1], Width: 25}, // NAME
+		{Title: "TUNNEL", Width: 40},       // Combined LOCAL:HOST:REMOTE
+		{Title: baseColumns[7], Width: 12}, // TAG
+		{Title: baseColumns[8], Width: 40}, // MESSAGE
 	}
 
 	t := table.New(
@@ -208,6 +205,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 		loader:       loader,
 		selectedTags: make(map[string]bool),
 		autoScroll:   true,
+		isWideMode:   false,
 	}
 
 	// Set initial rows
@@ -220,7 +218,23 @@ func (a *App) updateTableRows() {
 	// Update column headers to show sort indicators
 	columns := a.table.Columns()
 	for i := range columns {
-		title := a.baseColumns[i]
+		var title string
+		if a.isWideMode {
+			title = a.baseColumns[i]
+		} else {
+			switch i {
+			case 0:
+				title = a.baseColumns[0] // STATUS
+			case 1:
+				title = a.baseColumns[1] // NAME
+			case 2:
+				title = "TUNNEL"
+			case 3:
+				title = a.baseColumns[7] // TAG
+			case 4:
+				title = a.baseColumns[8] // MESSAGE
+			}
+		}
 
 		// Add sort indicator if this is the sorted column
 		if i == a.sortColumn {
@@ -286,16 +300,31 @@ func (a *App) updateTableRows() {
 			}
 		}
 
-		rows[i] = table.Row{
-			status,
-			t.Config.Name,
-			fmt.Sprintf("%*d", 7, t.Config.LocalPort),
-			bindAddr,
-			remoteHost,
-			fmt.Sprintf("%*d", 8, t.Config.RemotePort),
-			bastionHost,
-			t.Config.Tag,
-			message,
+		if a.isWideMode {
+			rows[i] = table.Row{
+				status,
+				t.Config.Name,
+				fmt.Sprintf("%*d", 7, t.Config.LocalPort),
+				bindAddr,
+				remoteHost,
+				fmt.Sprintf("%*d", 8, t.Config.RemotePort),
+				bastionHost,
+				t.Config.Tag,
+				message,
+			}
+		} else {
+			// Compact mode: combine local:host:remote into one field
+			tunnel := fmt.Sprintf("%d:%s:%d", t.Config.LocalPort, remoteHost, t.Config.RemotePort)
+			if t.Config.Bastion.Host != "" {
+				tunnel += fmt.Sprintf(" via %s", bastionHost)
+			}
+			rows[i] = table.Row{
+				status,
+				t.Config.Name,
+				tunnel,
+				t.Config.Tag,
+				message,
+			}
 		}
 	}
 	a.table.SetRows(rows)
@@ -1060,7 +1089,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "q", "ctrl+c", "esc":
+		case "q", "ctrl+c":
 			return a, tea.Quit
 
 		case "h":
@@ -1219,6 +1248,42 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.privacyMode = !a.privacyMode
 			a.updateTableRows()
 			return a, nil
+		case "w":
+			a.isWideMode = !a.isWideMode
+			// Update columns based on mode
+			if a.isWideMode {
+				// First set empty rows to avoid index out of range errors
+				a.table.SetRows([]table.Row{})
+				columns := []table.Column{
+					{Title: a.baseColumns[0], Width: 8},
+					{Title: a.baseColumns[1], Width: 25},
+					{Title: a.baseColumns[2], Width: 7},
+					{Title: a.baseColumns[3], Width: 15},
+					{Title: a.baseColumns[4], Width: 30},
+					{Title: a.baseColumns[5], Width: 8},
+					{Title: a.baseColumns[6], Width: 30},
+					{Title: a.baseColumns[7], Width: 12},
+					{Title: a.baseColumns[8], Width: 40},
+				}
+				a.table.SetColumns(columns)
+			} else {
+				// First set empty rows to avoid index out of range errors
+				a.table.SetRows([]table.Row{})
+				columns := []table.Column{
+					{Title: a.baseColumns[0], Width: 8},  // STATUS
+					{Title: a.baseColumns[1], Width: 25}, // NAME
+					{Title: "TUNNEL", Width: 40},         // Combined LOCAL:HOST:REMOTE
+					{Title: a.baseColumns[7], Width: 12}, // TAG
+					{Title: a.baseColumns[8], Width: 40}, // MESSAGE
+				}
+				a.table.SetColumns(columns)
+			}
+			// Reset sort column if it's out of range for the new mode
+			if !a.isWideMode && a.sortColumn >= 5 {
+				a.sortColumn = 0
+			}
+			a.updateTableRows()
+			return a, nil
 		}
 	}
 
@@ -1232,25 +1297,42 @@ func (a *App) sortTunnels() {
 
 	sort.SliceStable(a.tunnels, func(i, j int) bool {
 		var less bool
-		switch col {
-		case 0: // Status
-			less = a.tunnels[i].Status < a.tunnels[j].Status
-		case 1: // Name
-			less = a.tunnels[i].Config.Name < a.tunnels[j].Config.Name
-		case 2: // Local Port
-			less = a.tunnels[i].Config.LocalPort < a.tunnels[j].Config.LocalPort
-		case 3: // Bind
-			less = a.tunnels[i].Config.BindAddress < a.tunnels[j].Config.BindAddress
-		case 4: // Host
-			less = a.tunnels[i].Config.RemoteHost < a.tunnels[j].Config.RemoteHost
-		case 5: // Remote Port
-			less = a.tunnels[i].Config.RemotePort < a.tunnels[j].Config.RemotePort
-		case 6: // Bastion
-			less = a.tunnels[i].Config.Bastion.Host < a.tunnels[j].Config.Bastion.Host
-		case 7: // Tag
-			less = a.tunnels[i].Config.Tag < a.tunnels[j].Config.Tag
-		case 8: // Message
-			less = a.tunnels[i].Metrics < a.tunnels[j].Metrics
+		if a.isWideMode {
+			switch col {
+			case 0: // Status
+				less = a.tunnels[i].Status < a.tunnels[j].Status
+			case 1: // Name
+				less = a.tunnels[i].Config.Name < a.tunnels[j].Config.Name
+			case 2: // Local Port
+				less = a.tunnels[i].Config.LocalPort < a.tunnels[j].Config.LocalPort
+			case 3: // Bind
+				less = a.tunnels[i].Config.BindAddress < a.tunnels[j].Config.BindAddress
+			case 4: // Host
+				less = a.tunnels[i].Config.RemoteHost < a.tunnels[j].Config.RemoteHost
+			case 5: // Remote Port
+				less = a.tunnels[i].Config.RemotePort < a.tunnels[j].Config.RemotePort
+			case 6: // Bastion
+				less = a.tunnels[i].Config.Bastion.Host < a.tunnels[j].Config.Bastion.Host
+			case 7: // Tag
+				less = a.tunnels[i].Config.Tag < a.tunnels[j].Config.Tag
+			case 8: // Message
+				less = a.tunnels[i].Metrics < a.tunnels[j].Metrics
+			}
+		} else {
+			switch col {
+			case 0: // Status
+				less = a.tunnels[i].Status < a.tunnels[j].Status
+			case 1: // Name
+				less = a.tunnels[i].Config.Name < a.tunnels[j].Config.Name
+			case 2: // Combined tunnel
+				iTunnel := fmt.Sprintf("%d:%s:%d", a.tunnels[i].Config.LocalPort, a.tunnels[i].Config.RemoteHost, a.tunnels[i].Config.RemotePort)
+				jTunnel := fmt.Sprintf("%d:%s:%d", a.tunnels[j].Config.LocalPort, a.tunnels[j].Config.RemoteHost, a.tunnels[j].Config.RemotePort)
+				less = iTunnel < jTunnel
+			case 3: // Tag
+				less = a.tunnels[i].Config.Tag < a.tunnels[j].Config.Tag
+			case 4: // Message
+				less = a.tunnels[i].Metrics < a.tunnels[j].Metrics
+			}
 		}
 		if rev {
 			return !less
@@ -1411,7 +1493,7 @@ func (a *App) View() string {
 			controls += controlsStyle.Foreground(lipgloss.Color("227")).Render(" • a:manual")
 		}
 	}
-	controls += controlsStyle.Render(" • h:help • t:tags • q/esc:quit")
+	controls += controlsStyle.Render(" • h:help • t:tags • w:wide • q:quit")
 	if a.currentTag != "" {
 		controls += controlsStyle.Render(fmt.Sprintf(" | Tag Filter: %s", a.currentTag))
 	}

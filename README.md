@@ -97,3 +97,23 @@ make
 ```
 
 Right now we have a patched version of ssh_config...
+
+
+## Connection State Transitions
+
+```mermaid
+graph TD
+    A[Start] --> D{Bastion Host?}
+    D -->|Yes| E[Connect to Bastion]
+    E --> F[Connect to Remote Host]
+    D -->|No| F
+    F -->|Status: Connecting| G[SSH Connection Attempt]
+    G -->|SSH Connection Established| H[Status: Active]
+    H --> I[Establish Remote Connection]
+    I --> J[Forward Data]
+    J --> K[Update Metrics]
+    K --> L{Connection Dropped?}
+    L -->|Yes| M[Reconnect]
+    L -->|No| J
+    M -->|Status: Connecting| F
+```

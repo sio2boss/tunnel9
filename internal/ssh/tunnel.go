@@ -107,41 +107,29 @@ func (t *Tunnel) updateMetrics() {
 	}
 }
 
-func (t *Tunnel) measureLatency() {
-	for {
-		if t.Client == nil {
-			time.Sleep(time.Second)
-			continue
-		}
-
-		start := time.Now()
-		_, err := t.Client.NewSession()
-		if err != nil {
-			t.Metrics.mu.Lock()
-			t.Metrics.Latency = -1
-			t.Metrics.mu.Unlock()
-		} else {
-			t.Metrics.mu.Lock()
-			t.Metrics.Latency = time.Since(start)
-			t.Metrics.mu.Unlock()
-		}
-
-		time.Sleep(time.Second)
-	}
-}
-
 func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	t.logf("Starting tunnel for %s:%d", t.Config.RemoteHost, t.Config.RemotePort)
-	t.updateStatus("connecting", "initializing")
+	t.updateStatus("connecting", "waiting for traffic")
 
-	// Start latency measurement
-	go t.measureLatency()
-
-	// Start metrics updater
+	// Start combined metrics and latency updater
 	ticker := time.NewTicker(time.Second)
 	go func() {
 		for range ticker.C {
+			// Update metrics
 			t.updateMetrics()
+
+			// Measure latency
+			if t.Client != nil {
+				start := time.Now()
+				_, err := t.Client.NewSession()
+				t.Metrics.mu.Lock()
+				if err != nil {
+					t.Metrics.Latency = -1
+				} else {
+					t.Metrics.Latency = time.Since(start)
+				}
+				t.Metrics.mu.Unlock()
+			}
 		}
 	}()
 
@@ -204,7 +192,7 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 
 	actualRemoteAddress := net.JoinHostPort(remoteHost, fmt.Sprintf("%d", t.Config.RemotePort))
 	t.logf(fmt.Sprintf("establishing remote connection: %s", actualRemoteAddress))
-	t.updateStatus("connecting", "establishing remote connection")
+	t.updateStatus("active", "establishing remote connection")
 	remoteConnection, err := serverConn.Dial("tcp", actualRemoteAddress)
 	if err != nil {
 		t.errorf("connection failed")
@@ -227,7 +215,7 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 			if n > 0 {
 				_, werr := writer.Write(buf[:n])
 				if werr != nil {
-					t.errorf("Writing %s data: %v", direction, werr)
+					t.logf("Writing %s data: %v", direction, werr)
 					break
 				}
 
@@ -241,7 +229,7 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 			}
 			if err != nil {
 				if err != io.EOF {
-					t.errorf("Reading %s data: %v", direction, err)
+					t.logf("Reading %s data: %v", direction, err)
 				}
 				break
 			}
@@ -264,7 +252,7 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	<-done
 
 	t.logf("connection closed, waiting for new connection")
-	t.updateStatus("connecting", "connection closed, waiting for new connection")
+	t.updateStatus("active", "waiting for traffic")
 }
 
 func isPortAvailable(port int) bool {

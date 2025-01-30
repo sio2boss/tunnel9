@@ -1,0 +1,6 @@
+vars/container
+vars/cluster
+vars/branch
+vars/cluster_type
+vars/profile
+vars/lasthash

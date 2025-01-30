@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -125,7 +124,12 @@ var (
 			BorderForeground(lipgloss.Color("#2dd4bf")).
 			Padding(1, 2)
 
-	dialogActiveStyle = lipgloss.NewStyle()
+	dialogActiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#2dd4bf"))
+
+	dialogSelectedStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#2d3436")).
+				Foreground(lipgloss.Color("#2dd4bf"))
 
 	controlsStyle = lipgloss.NewStyle()
 )
@@ -150,8 +154,8 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 	// Create columns with initial widths for compact mode
 	columns := []table.Column{
 		{Title: baseColumns[0], Width: 8},  // STATUS
-		{Title: baseColumns[1], Width: 25}, // NAME
-		{Title: "TUNNEL", Width: 40},       // Combined LOCAL:HOST:REMOTE
+		{Title: baseColumns[1], Width: 20}, // NAME
+		{Title: "TUNNEL", Width: 30},       // Combined LOCAL:HOST:REMOTE
 		{Title: baseColumns[7], Width: 12}, // TAG
 		{Title: baseColumns[8], Width: 40}, // MESSAGE
 	}
@@ -286,7 +290,7 @@ func (a *App) updateTableRows() {
 		bastionHost := t.Config.Bastion.Host
 		bindAddr := t.Config.BindAddress
 		if bindAddr == "" {
-			bindAddr = "0.0.0.0"
+			bindAddr = "localhost"
 		}
 		if a.privacyMode {
 			if remoteHost != "" {
@@ -314,10 +318,16 @@ func (a *App) updateTableRows() {
 			}
 		} else {
 			// Compact mode: combine local:host:remote into one field
-			tunnel := fmt.Sprintf("%d:%s:%d", t.Config.LocalPort, remoteHost, t.Config.RemotePort)
-			if t.Config.Bastion.Host != "" {
-				tunnel += fmt.Sprintf(" via %s", bastionHost)
+			shortRemoteHost := remoteHost
+			if remoteHost == "localhost" && t.Config.Bastion.Host != "" {
+				shortRemoteHost = bastionHost
 			}
+			if idx := strings.Index(shortRemoteHost, "."); idx > 0 {
+				shortRemoteHost = shortRemoteHost[:idx]
+			}
+
+			tunnel := fmt.Sprintf("%d:%s:%d", t.Config.LocalPort, shortRemoteHost, t.Config.RemotePort)
+
 			rows[i] = table.Row{
 				status,
 				t.Config.Name,
@@ -351,7 +361,7 @@ func (a *App) Init() tea.Cmd {
 }
 
 func (a *App) logError(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
+	msg := fmt.Sprintf("%s ERROR %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 	a.errorLog = append(a.errorLog, msg)
 	// Keep only last 10 messages
 	if len(a.errorLog) > 10 {
@@ -488,34 +498,46 @@ func parseSshString(sshStr string) (*config.TunnelConfig, error) {
 		return nil, fmt.Errorf("invalid port mapping format")
 	}
 
+	// Validate remote host is not empty
+	if remoteHost == "" {
+		return nil, fmt.Errorf("remote host cannot be empty")
+	}
+
 	config := config.TunnelConfig{
 		Name:        fmt.Sprintf("%s-%d", remoteHost, localPort),
 		LocalPort:   localPort,
 		RemotePort:  remotePort,
 		RemoteHost:  remoteHost,
-		User:        os.Getenv("USER"), // Default to current user
 		BindAddress: bindAddr,
 	}
 
-	// Check if bastion host is provided (last argument contains @)
+	// Get the last argument as potential bastion host
 	lastArg := parts[len(parts)-1]
-	if strings.Contains(lastArg, "@") {
-		userHostParts := strings.Split(lastArg, "@")
-		if len(userHostParts) != 2 {
-			return nil, fmt.Errorf("invalid user@host format")
-		}
-		config.User = userHostParts[0]
-
-		// Parse host:port format for bastion
-		hostParts := strings.Split(userHostParts[1], ":")
-		if len(hostParts) == 2 {
-			config.Bastion.Host = hostParts[0]
-			config.Bastion.Port = hostParts[1]
+	if !strings.HasPrefix(lastArg, "-") {
+		// Set bastion host directly if no user specified
+		if !strings.Contains(lastArg, "@") {
+			config.Bastion.Host = lastArg
 		} else {
-			config.Bastion.Host = userHostParts[1]
-			config.Bastion.Port = "22" // Default port
+			// Parse user@host[:port] format
+			userHostParts := strings.Split(lastArg, "@")
+			if len(userHostParts) == 2 {
+				config.Bastion.User = userHostParts[0]
+				hostParts := strings.Split(userHostParts[1], ":")
+				if len(hostParts) == 2 {
+					config.Bastion.Host = hostParts[0]
+					port, err := strconv.Atoi(hostParts[1])
+					if err == nil {
+						config.Bastion.Port = port
+					}
+				} else {
+					config.Bastion.Host = userHostParts[1]
+				}
+			}
 		}
-		config.Bastion.User = userHostParts[0]
+		// Set default port if not specified
+		if config.Bastion.Port == 0 {
+			config.Bastion.Port = 22
+		}
 	}
 
 	return &config, nil
@@ -530,7 +552,6 @@ func (a *App) initDialog(mode dialogMode) {
 		{label: "Local Port", value: "", cursor: 0},
 		{label: "Remote Host", value: "", cursor: 0},
 		{label: "Remote Port", value: "", cursor: 0},
-		{label: "User", value: "", cursor: 0},
 		{label: "Bastion Host (optional)", value: "", cursor: 0},
 		{label: "Bastion Port (optional)", value: "", cursor: 0},
 		{label: "Bastion User (optional)", value: "", cursor: 0},
@@ -592,14 +613,12 @@ func (a *App) initDialog(mode dialogMode) {
 				selected.Config.RemotePort)
 		}
 		if selected.Config.Bastion.Host != "" {
-			bastionPort := selected.Config.Bastion.Port
-			if bastionPort == "" {
-				bastionPort = "22"
-			}
-			sshCmd += fmt.Sprintf(" %s@%s:%s",
+			sshCmd += fmt.Sprintf(" %s@%s",
 				selected.Config.Bastion.User,
-				selected.Config.Bastion.Host,
-				bastionPort)
+				selected.Config.Bastion.Host)
+			if selected.Config.Bastion.Port != 22 {
+				sshCmd += fmt.Sprintf(":%d", selected.Config.Bastion.Port)
+			}
 		}
 
 		a.dialogFields[1].value = sshCmd
@@ -612,31 +631,26 @@ func (a *App) initDialog(mode dialogMode) {
 		a.dialogFields[4].cursor = len(selected.Config.RemoteHost)
 		a.dialogFields[5].value = fmt.Sprintf("%d", selected.Config.RemotePort)
 		a.dialogFields[5].cursor = len(a.dialogFields[5].value)
-		a.dialogFields[6].value = selected.Config.User
-		a.dialogFields[6].cursor = len(selected.Config.User)
-		a.dialogFields[7].value = selected.Config.Bastion.Host
-		a.dialogFields[7].cursor = len(selected.Config.Bastion.Host)
-		a.dialogFields[8].value = selected.Config.Bastion.Port
-		if a.dialogFields[8].value == "" {
-			a.dialogFields[8].value = "22"
-		}
-		a.dialogFields[8].cursor = len(a.dialogFields[8].value)
-		a.dialogFields[9].value = selected.Config.Bastion.User
-		a.dialogFields[9].cursor = len(selected.Config.Bastion.User)
-		a.dialogFields[10].value = selected.Config.Name
-		a.dialogFields[10].cursor = len(selected.Config.Name)
-		a.dialogFields[11].value = selected.Config.Tag
-		a.dialogFields[11].cursor = len(selected.Config.Tag)
+		a.dialogFields[6].value = selected.Config.Bastion.Host
+		a.dialogFields[6].cursor = len(selected.Config.Bastion.Host)
+		a.dialogFields[7].value = strconv.Itoa(selected.Config.Bastion.Port)
+		a.dialogFields[7].cursor = len(a.dialogFields[7].value)
+		a.dialogFields[8].value = selected.Config.Bastion.User
+		a.dialogFields[8].cursor = len(selected.Config.Bastion.User)
+		a.dialogFields[9].value = selected.Config.Name
+		a.dialogFields[9].cursor = len(selected.Config.Name)
+		a.dialogFields[10].value = selected.Config.Tag
+		a.dialogFields[10].cursor = len(selected.Config.Tag)
 
-		// If tunnel is active, hide all fields except name and tag
-		if selected.Status == "active" {
-			a.dialogFields[0].isHidden = true
-			a.dialogFields[1].isHidden = true
-			for i := 2; i <= 9; i++ {
-				a.dialogFields[i].isHidden = true
+	}
+
+	// Set active field to first visible field
+	if mode == modeNew || (mode == modeEdit && a.tunnels[a.editingIndex].Status != "active") {
+		for i := range a.dialogFields {
+			if !a.dialogFields[i].isHidden {
+				a.activeField = i
+				break
 			}
-			// Set initial active field to name since earlier fields are hidden
-			a.activeField = 10
 		}
 	}
 }
@@ -650,8 +664,8 @@ func (a *App) handleDialogSubmit() {
 		selected := &a.tunnels[a.editingIndex]
 		if selected.Status == "active" {
 			// Only update name and tag for active tunnels
-			selected.Config.Name = a.dialogFields[10].value
-			selected.Config.Tag = a.dialogFields[11].value
+			selected.Config.Name = a.dialogFields[9].value
+			selected.Config.Tag = a.dialogFields[10].value
 			a.logf("Updated tunnel name/tag: %s", selected.Config.Name)
 			a.updateTableRows()
 			a.saveConfig()
@@ -683,14 +697,20 @@ func (a *App) handleDialogSubmit() {
 		var bastion struct {
 			Host string `yaml:"host"`
 			User string `yaml:"user"`
-			Port string `yaml:"port,omitempty"`
+			Port int    `yaml:"port,omitempty"`
 		}
-		if a.dialogFields[7].value != "" && a.dialogFields[9].value != "" {
-			bastion.Host = a.dialogFields[7].value
-			bastion.User = a.dialogFields[9].value
-			bastion.Port = a.dialogFields[8].value
-			if bastion.Port == "" {
-				bastion.Port = "22"
+		if a.dialogFields[6].value != "" && a.dialogFields[8].value != "" {
+			bastion.Host = a.dialogFields[6].value
+			bastion.User = a.dialogFields[8].value
+			if a.dialogFields[7].value != "" {
+				port, err := strconv.Atoi(a.dialogFields[7].value)
+				if err != nil {
+					a.logError("Invalid bastion port number")
+					return
+				}
+				bastion.Port = port
+			} else {
+				bastion.Port = 22
 			}
 		}
 
@@ -698,7 +718,6 @@ func (a *App) handleDialogSubmit() {
 			LocalPort:   localPort,
 			RemoteHost:  a.dialogFields[4].value,
 			RemotePort:  remotePort,
-			User:        a.dialogFields[6].value,
 			BindAddress: a.dialogFields[2].value,
 			Bastion:     bastion,
 		}
@@ -710,10 +729,10 @@ func (a *App) handleDialogSubmit() {
 	}
 
 	// Set name and tag from the common fields
-	if a.dialogFields[10].value != "" {
-		updatedConfig.Name = a.dialogFields[10].value
+	if a.dialogFields[9].value != "" {
+		updatedConfig.Name = a.dialogFields[9].value
 	}
-	updatedConfig.Tag = a.dialogFields[11].value
+	updatedConfig.Tag = a.dialogFields[10].value
 
 	if a.dialogMode == modeEdit {
 		// Update existing tunnel
@@ -803,17 +822,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if a.dialogFields[0].value == "ssh" {
 						a.dialogFields[0].value = "fields"
 						// Show individual fields
-						for i := 2; i <= 9; i++ {
+						for i := 2; i <= 8; i++ {
 							a.dialogFields[i].isHidden = false
 						}
 						a.dialogFields[1].isHidden = true // Hide SSH command
+						// Select first visible field (Bind Address)
+						a.activeField = 2
 					} else {
 						a.dialogFields[0].value = "ssh"
 						// Hide individual fields
-						for i := 2; i <= 9; i++ {
+						for i := 2; i <= 8; i++ {
 							a.dialogFields[i].isHidden = true
 						}
 						a.dialogFields[1].isHidden = false // Show SSH command
+						// Select SSH command field
+						a.activeField = 1
 					}
 					return a, nil
 				default:
@@ -1151,7 +1174,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if tunnel == nil {
 					selected.Status = "error"
 					selected.Metrics = "failed to start"
-					a.logError("Failed to start tunnel %s: %v", selected.Config.RemoteHost)
+					a.logError("Failed to start tunnel to %s", selected.Config.RemoteHost)
 				} else {
 					selected.Status = "connecting"
 					selected.Metrics = "initializing"
@@ -1235,6 +1258,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if !a.showDialog && len(a.tunnels) > 0 {
+				cursor := a.table.Cursor()
+				if cursor >= len(a.tunnels) {
+					return a, nil
+				}
+				selected := &a.tunnels[cursor]
+				// Don't allow editing of active or connecting tunnels
+				if selected.Status == "active" || selected.Status == "connecting" {
+					a.logError("Cannot edit tunnel while it is %s. Stop it first.", selected.Status)
+					return a, nil
+				}
 				a.showDialog = true
 				a.initDialog(modeEdit)
 				return a, nil
@@ -1408,33 +1441,58 @@ func (a *App) View() string {
 		}
 		content := dialogActiveStyle.Render(title) + "\n\n"
 
+		// Find the longest label for alignment
+		maxLabelWidth := 0
+		for _, field := range a.dialogFields {
+			if !field.isHidden && len(field.label) > maxLabelWidth {
+				maxLabelWidth = len(field.label)
+			}
+		}
+		// Add some padding
+		maxLabelWidth += 2
+
 		// Add each field
 		for i, field := range a.dialogFields {
 			if !field.isHidden {
-				// Show field label
+				// Show field label with padding
+				labelContent := field.label + ":"
 				if i == a.activeField {
-					content += dialogActiveStyle.Render("> "+field.label) + ":\n"
+					labelContent = "> " + labelContent
 				} else {
-					content += "  " + field.label + ":\n"
+					labelContent = "  " + labelContent
+				}
+				// Pad the label to align all values
+				for len(labelContent) < maxLabelWidth+4 {
+					labelContent += " "
+				}
+
+				if i == a.activeField {
+					content += dialogSelectedStyle.Render(labelContent)
+				} else {
+					content += labelContent
 				}
 
 				// Show field value with cursor if active
 				if i == a.activeField {
+					valueContent := field.value
 					if field.cursor == len(field.value) {
-						content += "  " + field.value + " "
-						// Place cursor under the last space if at end
-						content = content[:len(content)-1] + lipgloss.NewStyle().Underline(true).Render(" ")
+						valueContent += " "
+						content += dialogSelectedStyle.Render(valueContent[:len(valueContent)-1]) + lipgloss.NewStyle().Underline(true).Render(" ")
 					} else {
 						// Underline the character at cursor position
-						beforeCursor := field.value[:field.cursor]
-						atCursor := lipgloss.NewStyle().Underline(true).Render(string(field.value[field.cursor]))
-						afterCursor := field.value[field.cursor+1:]
-						content += "  " + beforeCursor + atCursor + afterCursor
+						beforeCursor := valueContent[:field.cursor]
+						atCursor := lipgloss.NewStyle().Underline(true).Render(string(valueContent[field.cursor]))
+						afterCursor := valueContent[field.cursor+1:]
+						content += dialogSelectedStyle.Render(beforeCursor) + atCursor + dialogSelectedStyle.Render(afterCursor)
 					}
 				} else {
-					content += "  " + field.value
+					content += field.value
 				}
-				content += "\n\n"
+				content += "\n"
+				// Add extra spacing between sections and after Remote Port field
+				if i == 1 || i == 5 || i == 8 {
+					content += "\n" // Add extra spacing between sections
+				}
 			}
 		}
 

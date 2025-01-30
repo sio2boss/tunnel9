@@ -1,0 +1,20 @@
+#! /bin/bash
+
+
+# Import color
+source $AV_CONFIG_DIR/default_imports
+source $AV_CONFIG_DIR/findjar
+
+# Check for a help flag
+avCheckHelpFlags "$1" "builtin" "template script" "\n \
+    Template to help you out.\n \
+\n"
+
+# Import system path
+avAppendSystemPath
+
+#### Put system commands here
+
+cd $AV_ROOT/.. && make && ./tunnel9
+
+#### End commands

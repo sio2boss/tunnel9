@@ -13,13 +13,12 @@ type TunnelConfig struct {
 	LocalPort   int    `yaml:"local_port"`
 	RemotePort  int    `yaml:"remote_port"`
 	RemoteHost  string `yaml:"remote_host"`
-	User        string `yaml:"user"`
 	Tag         string `yaml:"tag"`
 	BindAddress string `yaml:"bind_address,omitempty"`
 	Bastion     struct {
 		Host string `yaml:"host"`
 		User string `yaml:"user"`
-		Port string `yaml:"port,omitempty"`
+		Port int    `yaml:"port,omitempty"`
 	} `yaml:"bastion,omitempty"`
 }
 

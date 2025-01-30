@@ -35,7 +35,7 @@ func formatBytes(bytes float64) string {
 }
 
 func formatLatency(d time.Duration) string {
-	if d < 0 {
+	if d <= 0 {
 		return "n/a"
 	}
 	return fmt.Sprintf("%dms", d.Milliseconds())
@@ -84,11 +84,6 @@ func (tm *TunnelManager) CreateTunnel(id string, config config.TunnelConfig) *Tu
 }
 
 func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
-	// Check if port is available
-	if !isPortAvailable(tunnel.Config.BindAddress, tunnel.Config.LocalPort) {
-		tunnel.errorf("port already in use")
-		return fmt.Errorf("port already in use")
-	}
 
 	// Get SSH config
 	sshconfig, err := tunnel.getSSHConfig()
@@ -98,11 +93,9 @@ func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
 	}
 
 	// Start local listener
-	bindAddr := tunnel.Config.BindAddress
-	if bindAddr == "" {
-		bindAddr = "0.0.0.0"
-	}
-	tunnel.Listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", bindAddr, tunnel.Config.LocalPort))
+	localEndpoint := NewEndpoint(tunnel.Config.BindAddress, tunnel.Config.LocalPort, "localhost")
+
+	tunnel.Listener, err = net.Listen("tcp", localEndpoint.String())
 	if err != nil {
 		tunnel.errorf("failed to listen on port %d", tunnel.Config.LocalPort)
 		return fmt.Errorf("failed to listen on port %d", tunnel.Config.LocalPort)
@@ -128,6 +121,7 @@ func (tm *TunnelManager) StopTunnel(id string) error {
 	}
 
 	tunnel.logf("Tunnel connection closed for %s", tunnel.Config.Name)
+	tunnel.updateStatus("closed", "closed")
 	if tunnel.Listener != nil {
 		tunnel.Listener.Close()
 		tunnel.Listener = nil

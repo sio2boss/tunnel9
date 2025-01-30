@@ -2,6 +2,10 @@
 
 A terminal user interface (TUI) for managing SSH tunnels.  Tunnel9 provides a simple, efficient way to manage multiple SSH port forwarding configurations with real-time monitoring of throughput and latency.
 
+![Tunnel9 Screenshot](docs/screenshot.png)
+
+Many thanks to [How to Create An SSH Tunnel in Go](https://elliotchance.medium.com/how-to-create-an-ssh-tunnel-in-go-b63722d682aa) by Elliot Chance and [A Visual Guide to SSH Tunnels: Local and Remote Port Forwarding](https://iximiuz.com/en/posts/ssh-tunnels/) by Ivan Velichko.
+
 ## Features
 
 - Simple terminal-based UI for managing SSH tunnels
@@ -14,8 +18,13 @@ A terminal user interface (TUI) for managing SSH tunnels.  Tunnel9 provides a si
 
 - Go (backend)
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) (TUI framework)
-- SSH client integration using Go's `golang.org/x/crypto/ssh` package
+  - [Bubbles](https://github.com/charmbracelet/bubbles) (Bubble Tea components)
+  - [Lipgloss](https://github.com/charmbracelet/lipgloss) (Terminal styling)
+- SSH integration
+  - `golang.org/x/crypto/ssh` (SSH client)
+  - `ssh_config` (SSH config parsing)
 - [docopt](https://github.com/docopt/docopt-go) (CLI argument parsing)
+- YAML for configuration (`gopkg.in/yaml.v3`)
 
 ## Interface
 
@@ -60,7 +69,7 @@ tunnels:
 
 ## Installation
 
-Run the install script
+Run the install script:
 
 ```
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/sio2boss/tunnel9/main/tools/install.sh)"
@@ -98,6 +107,12 @@ make
 
 Right now we have a patched version of ssh_config...
 
+Additional tools:
+```
+brew install vhs
+brew install ttyd --HEAD
+go get -u gotest.tools/gotestsum
+```
 
 ## Connection State Transitions
 

@@ -286,6 +286,4 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	<-done
 	<-done
 
-	t.logf("connection closed, waiting for new connection")
-	t.updateStatus("active", "waiting for traffic")
 }

@@ -4,15 +4,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
 	"tunnel9/internal/config"
 
-	"github.com/sio2boss/ssh_config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -49,6 +45,7 @@ type Tunnel struct {
 	StatusChan chan TunnelStatus
 	Listener   net.Listener
 	Metrics    TunnelMetrics
+	stopChan   chan struct{} // Add stop channel for clean shutdown
 }
 
 func (t *Tunnel) updateStatus(state string, message string) {
@@ -106,15 +103,35 @@ func (t *Tunnel) updateMetrics() {
 func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	t.logf("Starting tunnel")
 
+	// Initialize stop channel
+	t.stopChan = make(chan struct{})
+
 	// Start combined metrics and latency updater
 	ticker := time.NewTicker(time.Second)
-	go func() {
-		for range ticker.C {
-			// Update metrics
-			t.updateMetrics()
+	defer ticker.Stop()
 
-			// Measure latency
-			if t.Client != nil {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Log the panic but don't crash
+				if t != nil && t.LogChan != nil {
+					t.logf("Metrics updater panic recovered: %v", r)
+				}
+			}
+		}()
+
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			case <-ticker.C:
+				if t == nil || t.Client == nil {
+					continue
+				}
+				// Update metrics
+				t.updateMetrics()
+
+				// Measure latency
 				start := time.Now()
 				session, err := t.Client.NewSession()
 				t.Metrics.mu.Lock()
@@ -125,10 +142,6 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 					session.Close()
 				}
 				t.Metrics.mu.Unlock()
-			} else {
-				t.Metrics.mu.Lock()
-				t.Metrics.Latency = -1
-				t.Metrics.mu.Unlock()
 			}
 		}
 	}()
@@ -136,14 +149,43 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	// Handle (re)connections in the background
 	t.updateStatus("connecting", "waiting for traffic")
 	for {
+		// Check if we should stop
+		select {
+		case <-t.stopChan:
+			t.logf("Tunnel stopping")
+			return
+		default:
+		}
+
+		// Set a deadline for Accept to allow checking stopChan
+		if t.Listener != nil {
+			t.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
+		}
+
 		conn, err := t.Listener.Accept()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// This is just a timeout, continue to check stopChan
+				continue
+			}
 			t.logf("Listener closed: %v", err)
-			ticker.Stop()
-			t.updateStatus("stopped", "listener closed")
 			return
 		}
 		go t.forward(conn, sshconfig)
+	}
+}
+
+func (t *Tunnel) Stop() {
+	if t.stopChan != nil {
+		close(t.stopChan)
+	}
+
+	if t.Listener != nil {
+		t.Listener.Close()
+	}
+
+	if t.Client != nil {
+		t.Client.Close()
 	}
 }
 
@@ -246,114 +288,4 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 
 	t.logf("connection closed, waiting for new connection")
 	t.updateStatus("active", "waiting for traffic")
-}
-
-func (t *Tunnel) getSSHConfig() (*ssh.ClientConfig, error) {
-
-	// Find home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	// Try ECDSA first, then RSA
-	var key []byte
-	keyPaths := []string{
-		filepath.Join(home, ".ssh", "id_ecdsa"),
-		filepath.Join(home, ".ssh", "id_rsa"),
-	}
-
-	// Load Keys
-	var auths []ssh.AuthMethod
-	for _, keyPath := range keyPaths {
-		key, err = os.ReadFile(keyPath)
-		if err != nil {
-			t.logf("Failed to find key at %s", keyPath)
-			continue
-		}
-
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse private key: %v", err)
-		}
-
-		// Add signer to config
-		auths = append(auths, ssh.PublicKeys(signer))
-		t.logf("Using SSH key: %s", keyPath)
-	}
-
-	// Set User from config or environment variable
-	sshUser := t.Config.Bastion.User
-	if t.Config.Bastion.User == "" {
-		sshUser = os.Getenv("USER")
-	}
-
-	// We will resolve this host in the SSH config file
-	lookupHost := &t.Config.Bastion.Host
-	lookupPort := &t.Config.Bastion.Port
-	if t.Config.Bastion.Host == "" {
-		lookupHost = &t.Config.RemoteHost
-		lookupPort = &t.Config.RemotePort
-	}
-
-	// Load SSH config file
-	configFile, err := os.Open(filepath.Join(home, ".ssh", "config"))
-	if err != nil {
-		t.logf("Failed to open SSH config: %v", err)
-	} else {
-		defer configFile.Close()
-		sshConfig, err := ssh_config.Decode(configFile)
-		if err != nil {
-			t.logf("Failed to parse SSH config: %v", err)
-		} else {
-
-			// override lookupHost with HostName from SSH config
-			if host, _ := sshConfig.Get(*lookupHost, "HostName"); host != "" {
-				t.logf("Overriding host %s with %s from SSH config", *lookupHost, host)
-				*lookupHost = host
-			}
-
-			// override port with that in the SSH config
-			if port, _ := sshConfig.Get(*lookupHost, "Port"); port != "" {
-				if portNum, err := strconv.Atoi(port); err == nil {
-					t.logf("Overriding port %d with %d from SSH config", *lookupPort, portNum)
-					*lookupPort = portNum
-				}
-			}
-
-			// Override Bastions User with User from SSH config
-			if user, _ := sshConfig.Get(*lookupHost, "User"); user != "" {
-				t.logf("Overriding user with %s from SSH config", user)
-				sshUser = user
-			}
-
-			if identityFile, _ := sshConfig.Get(*lookupHost, "IdentityFile"); identityFile != "" {
-				t.logf("adding identity file: %s", identityFile)
-				key, err = os.ReadFile(identityFile)
-				if err != nil {
-					t.logf("Failed to find key at %s", identityFile)
-				} else {
-					signer, err := ssh.ParsePrivateKey(key)
-					if err != nil {
-						t.errorf("failed to parse private key: %v", err)
-					} else {
-						auths = []ssh.AuthMethod{ssh.PublicKeys(signer)}
-						t.logf("Using SSH key: %s", identityFile)
-					}
-				}
-			}
-		}
-	}
-
-	config := &ssh.ClientConfig{
-		User:            sshUser,
-		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
-		Timeout:         10 * time.Second,
-	}
-
-	// Add keep-alive configuration
-	config.Timeout = 10 * time.Second
-
-	return config, nil
 }

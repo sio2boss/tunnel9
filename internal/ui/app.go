@@ -1113,6 +1113,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
+			// Cleanup all resources before quitting
+			a.manager.Cleanup()
 			return a, tea.Quit
 
 		case "h":
@@ -1158,11 +1160,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			cursor := a.table.Cursor()
-			if cursor >= len(a.tunnels) {
+
+			// Get the filtered tunnels if there's a tag filter
+			filteredTunnels := a.tunnels
+			if a.currentTag != "" {
+				selectedTags := strings.Split(a.currentTag, ",")
+				filteredTunnels = make([]TunnelRecord, 0)
+				for _, t := range a.tunnels {
+					for _, tag := range selectedTags {
+						if t.Config.Tag == tag {
+							filteredTunnels = append(filteredTunnels, t)
+							break
+						}
+					}
+				}
+			}
+
+			if cursor >= len(filteredTunnels) {
 				return a, nil
 			}
 
-			selected := &a.tunnels[cursor]
+			// Find the actual tunnel from the filtered list
+			selectedTunnel := filteredTunnels[cursor]
+			var selected *TunnelRecord
+			for i := range a.tunnels {
+				if a.tunnels[i].ID == selectedTunnel.ID {
+					selected = &a.tunnels[i]
+					break
+				}
+			}
+
+			if selected == nil {
+				return a, nil
+			}
 
 			switch selected.Status {
 			case "stopped", "error":

@@ -84,9 +84,8 @@ func (tm *TunnelManager) CreateTunnel(id string, config config.TunnelConfig) *Tu
 }
 
 func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
-
 	// Get SSH config
-	sshconfig, err := tunnel.getSSHConfig()
+	sshconfig, err := GetSSHConfig(tunnel)
 	if err != nil {
 		tunnel.errorf("failed to get SSH config")
 		return fmt.Errorf("failed to get SSH config")
@@ -120,24 +119,41 @@ func (tm *TunnelManager) StopTunnel(id string) error {
 		return nil
 	}
 
-	tunnel.logf("Tunnel connection closed for %s", tunnel.Config.Name)
-	tunnel.updateStatus("closed", "closed")
-	if tunnel.Listener != nil {
-		tunnel.Listener.Close()
-		tunnel.Listener = nil
-	}
-	if tunnel.Client != nil {
-		tunnel.Client.Close()
-		tunnel.Client = nil
-	}
+	// First stop all goroutines and close connections
+	tunnel.Stop()
 
+	// Wait a moment for goroutines to clean up
 	time.Sleep(time.Second / 2)
 
-	// Close the tunnel's channels
-	close(tunnel.LogChan)
-	tunnel.LogChan = nil
-	close(tunnel.StatusChan)
-	tunnel.StatusChan = nil
+	// Now close channels
+	if tunnel.LogChan != nil {
+		close(tunnel.LogChan)
+		tunnel.LogChan = nil
+	}
+	if tunnel.StatusChan != nil {
+		close(tunnel.StatusChan)
+		tunnel.StatusChan = nil
+	}
+
+	// Remove from manager
 	delete(tm.tunnels, id)
 	return nil
+}
+
+// Add cleanup method for the manager
+func (tm *TunnelManager) Cleanup() {
+	// Stop all tunnels
+	for id := range tm.tunnels {
+		tm.StopTunnel(id)
+	}
+
+	// Close manager channels
+	if tm.LogChan != nil {
+		close(tm.LogChan)
+		tm.LogChan = nil
+	}
+	if tm.StatusChan != nil {
+		close(tm.StatusChan)
+		tm.StatusChan = nil
+	}
 }

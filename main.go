@@ -13,7 +13,7 @@ import (
 	"github.com/docopt/docopt-go"
 )
 
-const VERSION string = "1.0.0"
+const VERSION string = "1.0.1"
 const USAGE_CONTENT string = `tunnel9 - SSH Tunnel Manager
 
 Version: %s

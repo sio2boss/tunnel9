@@ -157,10 +157,14 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 		default:
 		}
 
-		// Set a deadline for Accept to allow checking stopChan
-		if t.Listener != nil {
-			t.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
+		// Signal that this is an error condition, not a normal stop
+		if t.Listener == nil {
+			t.errorf("Listener cannot accept connections")
+			t.updateStatus("error", "cannot accept connections")
+			return
 		}
+
+		t.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
 
 		conn, err := t.Listener.Accept()
 		if err != nil {
@@ -180,12 +184,9 @@ func (t *Tunnel) Stop() {
 		close(t.stopChan)
 	}
 
-	if t.Listener != nil {
-		t.Listener.Close()
-	}
-
 	if t.Client != nil {
 		t.Client.Close()
+		t.Client = nil
 	}
 }
 
@@ -226,6 +227,11 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 		client, err := ssh.Dial("tcp", sshEndpoint.String(), sshconfig)
 		if err != nil {
 			t.errorf("SSH connection failed: %v (user: %s, address: %s)", err, sshconfig.User, sshEndpoint)
+			t.updateStatus("error", fmt.Sprintf("SSH connection failed: %v", err))
+			if t.Client != nil {
+				t.Client.Close()
+				t.Client = nil
+			}
 			return
 		}
 		t.Client = client
@@ -235,7 +241,10 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	t.updateStatus("active", "establishing remote connection")
 	remoteConnection, err := t.Client.Dial("tcp", remoteEndpoint.String())
 	if err != nil {
-		t.errorf("connection failed")
+		t.errorf("connection failed to remote target: %v", err)
+		t.updateStatus("error", fmt.Sprintf("remote connection failed: %v", err))
+		// Don't close the client here, as it might still be usable for other connections
+		// Just report the error and let the connection be retried
 		return
 	}
 	defer remoteConnection.Close()

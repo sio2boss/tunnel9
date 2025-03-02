@@ -1,9 +1,9 @@
-#! /bin/sh
+#!/bin/sh
 
 # Figure out OS and ARCH
 OS="`uname`"
 ARCH="`uname -m`"
-VERSION=v1.0.0
+VERSION=v1.0.1
 OSARCH=
 APP=tunnel9
 FORMAT=tar.gz

@@ -93,7 +93,6 @@ func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
 
 	// Start local listener
 	localEndpoint := NewEndpoint(tunnel.Config.BindAddress, tunnel.Config.LocalPort, "localhost")
-
 	tunnel.Listener, err = net.Listen("tcp", localEndpoint.String())
 	if err != nil {
 		tunnel.errorf("failed to listen on port %d", tunnel.Config.LocalPort)
@@ -124,6 +123,11 @@ func (tm *TunnelManager) StopTunnel(id string) error {
 
 	// Wait a moment for goroutines to clean up
 	time.Sleep(time.Second / 2)
+
+	if tunnel.Listener != nil {
+		tunnel.Listener.Close()
+		tunnel.Listener = nil
+	}
 
 	// Now close channels
 	if tunnel.LogChan != nil {

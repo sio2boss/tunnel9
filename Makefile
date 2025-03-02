@@ -54,3 +54,6 @@ clean:
 
 install: all
 	cp ./tunnel9 ~/.local/bin/
+
+vhs: all
+	cd docs && vhs tui.tape

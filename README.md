@@ -2,7 +2,7 @@
 
 A terminal user interface (TUI) for managing SSH tunnels.  Tunnel9 provides a simple, efficient way to manage multiple SSH port forwarding configurations with real-time monitoring of throughput and latency.
 
-![Tunnel9 Screenshot](docs/screenshot.png)
+![Tunnel9 Screenshot](docs/tui.gif)
 
 Many thanks to [How to Create An SSH Tunnel in Go](https://elliotchance.medium.com/how-to-create-an-ssh-tunnel-in-go-b63722d682aa) by Elliot Chance and [A Visual Guide to SSH Tunnels: Local and Remote Port Forwarding](https://iximiuz.com/en/posts/ssh-tunnels/) by Ivan Velichko.
 
@@ -100,12 +100,18 @@ or
 
 ## Development
 
+Basic development workflow:
 ```
 go mod tidy
 make
 ```
 
-Right now we have a patched version of ssh_config...
+Install locally:
+```
+make install
+```
+
+FYI: Right now we have a patched version of ssh_config...
 
 Additional tools:
 ```
@@ -113,6 +119,19 @@ brew install vhs
 brew install ttyd --HEAD
 go get -u gotest.tools/gotestsum
 ```
+
+Rebuild gif linked in top of README.md:
+```
+make vhs
+```
+
+
+## Prepairing for a release
+
+1. Update version number in main.go and tools/install.sh
+2. Run `make release`
+3. Upload `./release` artifacts to GitHub Release
+
 
 ## Connection State Transitions
 

@@ -221,7 +221,9 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	sshEndpoint, remoteEndpoint := figureOutRemoteVsBastion(t.Config)
 
 	// Only establish a new client if we don't have one or if it's closed
+	var isFirstConnect bool = false
 	if t.Client == nil {
+		isFirstConnect = true
 		t.logf("connecting to SSH server (1/2): %s", sshEndpoint.String())
 		t.updateStatus("connecting", "connecting to server")
 		client, err := ssh.Dial("tcp", sshEndpoint.String(), sshconfig)
@@ -237,8 +239,10 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 		t.Client = client
 	}
 
-	t.logf("connecting to remote server (2/2): %s", remoteEndpoint.String())
-	t.updateStatus("active", "establishing remote connection")
+	if isFirstConnect {
+		t.logf("connecting to remote server (2/2): %s", remoteEndpoint.String())
+		t.updateStatus("active", "establishing remote connection")
+	}
 	remoteConnection, err := t.Client.Dial("tcp", remoteEndpoint.String())
 	if err != nil {
 		t.errorf("connection failed to remote target: %v", err)
@@ -249,7 +253,9 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	}
 	defer remoteConnection.Close()
 
-	t.updateStatus("active", "tunnel established")
+	if isFirstConnect {
+		t.updateStatus("active", "tunnel established")
+	}
 
 	// Copy bidirectionally with metrics
 	copyConn := func(writer, reader net.Conn, direction string) {

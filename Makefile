@@ -1,12 +1,15 @@
 VERSION := v$(shell ./tools/version.sh)
 APP := tunnel9
 
-.PHONY: all release
+.PHONY: all release homebrew test tests test-unit test-coverage clean
 
 all:
 	go build -trimpath
 
 release: linux_arm64 linux_amd64 apple_amd64 apple_arm64 win_amd64 win_arm64 update_version
+
+homebrew: release
+	./tools/update_homebrew_formula.sh
 
 linux_arm64:
 	mkdir -p release
@@ -51,9 +54,27 @@ clean:
 	rm -f ./tunnel9
 	rm -rf ./release
 	rm -f ./go.sum
+	rm -f coverage.out coverage.html
 
 install: all
 	cp ./tunnel9 ~/.local/bin/
 
 vhs: all
 	cd docs && vhs tui.tape
+
+# Test targets
+test: test-unit
+
+tests: test-unit
+
+test-unit:
+	go test -v ./internal/...
+
+test-coverage:
+	go test -coverprofile=coverage.out ./internal/...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+
+test-watch:
+	@echo "Starting test watcher (requires gotestsum)..."
+	gotestsum --watch ./internal/...

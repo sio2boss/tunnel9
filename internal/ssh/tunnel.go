@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ type Tunnel struct {
 	Listener   net.Listener
 	Metrics    TunnelMetrics
 	stopChan   chan struct{} // Add stop channel for clean shutdown
+	clientMu   sync.RWMutex  // Protect SSH client access
 }
 
 func (t *Tunnel) updateStatus(state string, message string) {
@@ -100,6 +102,79 @@ func (t *Tunnel) updateMetrics() {
 	}
 }
 
+// isSSHClientHealthy checks if the SSH client is still responsive
+func (t *Tunnel) isSSHClientHealthy() bool {
+	if t == nil {
+		return false
+	}
+
+	t.clientMu.RLock()
+	client := t.Client
+	t.clientMu.RUnlock()
+
+	if client == nil {
+		return false
+	}
+
+	// Try to create a session with a timeout
+	done := make(chan bool, 1)
+	var healthy bool
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Recover from any panics in session creation
+				healthy = false
+			}
+			done <- true
+		}()
+
+		session, err := client.NewSession()
+		if err == nil {
+			session.Close()
+			healthy = true
+		}
+	}()
+
+	// Wait for the health check with a timeout
+	select {
+	case <-done:
+		return healthy
+	case <-time.After(2 * time.Second):
+		// Timeout - client is probably not healthy
+		return false
+	}
+}
+
+// isConnectionError checks if the error indicates a connection problem that requires SSH client recreation
+func (t *Tunnel) isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+	connectionErrors := []string{
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"network is unreachable",
+		"no route to host",
+		"timeout",
+		"connection timed out",
+		"ssh: disconnect",
+		"ssh: connection lost",
+		"use of closed network connection",
+	}
+
+	for _, connErr := range connectionErrors {
+		if strings.Contains(errStr, connErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	t.logf("Starting tunnel")
 
@@ -132,16 +207,32 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 				t.updateMetrics()
 
 				// Measure latency
+				t.clientMu.RLock()
+				client := t.Client
+				t.clientMu.RUnlock()
+
+				if client == nil {
+					t.Metrics.mu.Lock()
+					t.Metrics.Latency = -1
+					t.Metrics.mu.Unlock()
+					continue
+				}
+
 				start := time.Now()
-				session, err := t.Client.NewSession()
+				session, err := client.NewSession()
 				t.Metrics.mu.Lock()
 				if err != nil {
 					t.Metrics.Latency = -1
+					// If we can't create a session, the client might be dead
+					t.Metrics.mu.Unlock()
+					t.logf("SSH client health check failed: %v", err)
+					// Don't close the client here since we're in a goroutine
+					// The forward function will detect this and handle reconnection
 				} else {
 					t.Metrics.Latency = time.Since(start)
 					session.Close()
+					t.Metrics.mu.Unlock()
 				}
-				t.Metrics.mu.Unlock()
 			}
 		}
 	}()
@@ -184,10 +275,12 @@ func (t *Tunnel) Stop() {
 		close(t.stopChan)
 	}
 
+	t.clientMu.Lock()
 	if t.Client != nil {
 		t.Client.Close()
 		t.Client = nil
 	}
+	t.clientMu.Unlock()
 }
 
 func figureOutRemoteVsBastion(config config.TunnelConfig) (*Endpoint, *Endpoint) {
@@ -217,11 +310,39 @@ func figureOutRemoteVsBastion(config config.TunnelConfig) (*Endpoint, *Endpoint)
 func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) {
 	defer localConnection.Close()
 
+	// Check if tunnel is being shut down
+	if t == nil {
+		return
+	}
+
+	select {
+	case <-t.stopChan:
+		t.logf("Tunnel stopping, aborting forward")
+		return
+	default:
+	}
+
 	// Parse host and port
 	sshEndpoint, remoteEndpoint := figureOutRemoteVsBastion(t.Config)
 
+	// Check if SSH client is healthy and reconnect if necessary
+	t.clientMu.Lock()
+	needsHealthCheck := t.Client != nil
+	t.clientMu.Unlock()
+
+	if needsHealthCheck && !t.isSSHClientHealthy() {
+		t.logf("SSH client appears unhealthy, closing and reconnecting")
+		t.clientMu.Lock()
+		if t.Client != nil {
+			t.Client.Close()
+			t.Client = nil
+		}
+		t.clientMu.Unlock()
+	}
+
 	// Only establish a new client if we don't have one or if it's closed
 	var isFirstConnect bool = false
+	t.clientMu.Lock()
 	if t.Client == nil {
 		isFirstConnect = true
 		t.logf("connecting to SSH server (1/2): %s", sshEndpoint.String())
@@ -234,23 +355,67 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 				t.Client.Close()
 				t.Client = nil
 			}
+			t.clientMu.Unlock()
 			return
 		}
 		t.Client = client
 	}
+	client := t.Client
+	t.clientMu.Unlock()
 
 	if isFirstConnect {
 		t.logf("connecting to remote server (2/2): %s", remoteEndpoint.String())
 		t.updateStatus("active", "establishing remote connection")
 	}
-	remoteConnection, err := t.Client.Dial("tcp", remoteEndpoint.String())
-	if err != nil {
-		t.errorf("connection failed to remote target: %v", err)
-		t.updateStatus("error", fmt.Sprintf("remote connection failed: %v", err))
-		// Don't close the client here, as it might still be usable for other connections
-		// Just report the error and let the connection be retried
-		return
+
+	// Retry remote connection with exponential backoff
+	maxRetries := 3
+	baseDelay := time.Second
+
+	var remoteConnection net.Conn
+	var err error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Check if we should stop before each attempt
+		select {
+		case <-t.stopChan:
+			t.logf("Tunnel stopping during connection attempt")
+			return
+		default:
+		}
+
+		if client == nil {
+			t.errorf("SSH client became nil during connection attempt")
+			return
+		}
+
+		remoteConnection, err = client.Dial("tcp", remoteEndpoint.String())
+		if err == nil {
+			break
+		}
+
+		t.logf("connection failed to remote target (attempt %d/%d): %v", attempt+1, maxRetries, err)
+
+		// If this is the last attempt or SSH client seems broken, close it
+		if attempt == maxRetries-1 || t.isConnectionError(err) {
+			t.errorf("connection failed to remote target after %d attempts: %v", maxRetries, err)
+			t.updateStatus("error", fmt.Sprintf("remote connection failed: %v", err))
+			// Close and nil the client so next connection will create a fresh one
+			t.clientMu.Lock()
+			if t.Client != nil {
+				t.Client.Close()
+				t.Client = nil
+			}
+			t.clientMu.Unlock()
+			return
+		}
+
+		// Wait before retrying with exponential backoff
+		delay := time.Duration(attempt+1) * baseDelay
+		t.logf("retrying remote connection in %v", delay)
+		time.Sleep(delay)
 	}
+
 	defer remoteConnection.Close()
 
 	if isFirstConnect {
@@ -261,6 +426,13 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	copyConn := func(writer, reader net.Conn, direction string) {
 		buf := make([]byte, 32*1024)
 		for {
+			// Check if we should stop
+			select {
+			case <-t.stopChan:
+				return
+			default:
+			}
+
 			n, err := reader.Read(buf)
 			if n > 0 {
 				_, werr := writer.Write(buf[:n])
@@ -297,8 +469,17 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 		done <- true
 	}()
 
-	// Wait for both copies to finish
-	<-done
-	<-done
-
+	// Wait for both copies to finish or stop signal
+	finished := 0
+	for finished < 2 {
+		select {
+		case <-done:
+			finished++
+		case <-t.stopChan:
+			// Force close connections to unblock the copy operations
+			remoteConnection.Close()
+			localConnection.Close()
+			return
+		}
+	}
 }

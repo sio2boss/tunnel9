@@ -1,6 +1,7 @@
 # Binaries
 /tunnel9
 /release/
+/homebrew
 
 # Go specific
 *.exe
@@ -23,3 +24,7 @@ commands
 # Air
 tmp/ 
 **/*.bak
+
+# Test coverage artifacts
+coverage.out
+coverage.html

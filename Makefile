@@ -1,12 +1,15 @@
 VERSION := v$(shell ./tools/version.sh)
 APP := tunnel9
 
-.PHONY: all release
+.PHONY: all release homebrew
 
 all:
 	go build -trimpath
 
 release: linux_arm64 linux_amd64 apple_amd64 apple_arm64 win_amd64 win_arm64 update_version
+
+homebrew: release
+	./tools/update_homebrew_formula.sh
 
 linux_arm64:
 	mkdir -p release

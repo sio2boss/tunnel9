@@ -1,6 +1,7 @@
 # Binaries
 /tunnel9
 /release/
+/homebrew
 
 # Go specific
 *.exe

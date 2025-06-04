@@ -6,6 +6,43 @@ A terminal user interface (TUI) for managing SSH tunnels.  Tunnel9 provides a si
 
 Many thanks to [How to Create An SSH Tunnel in Go](https://elliotchance.medium.com/how-to-create-an-ssh-tunnel-in-go-b63722d682aa) by Elliot Chance and [A Visual Guide to SSH Tunnels: Local and Remote Port Forwarding](https://iximiuz.com/en/posts/ssh-tunnels/) by Ivan Velichko.
 
+## Installation
+
+### Homebrew (Recommended)
+
+```bash
+brew install sio2boss/tap/tunnel9
+```
+
+### Install Script
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/sio2boss/tunnel9/main/tools/install.sh)"
+```
+
+### Manual Installation
+
+1. Download the latest release from the releases page
+2. Extract the archive:
+   ```bash
+   tar xzf tunnel9-*.tar.gz
+   ```
+3. Copy the binary to your local bin directory:
+   ```bash
+   mkdir -p ~/.local/bin
+   mv tunnel9 ~/.local/bin/
+   chmod +x ~/.local/bin/tunnel9
+   ```
+4. Ensure `~/.local/bin` is in your PATH. Add this to your `~/.bashrc` or `~/.zshrc`:
+   ```bash
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+5. Restart your shell or source your rc file:
+   ```bash
+   source ~/.bashrc  # or source ~/.zshrc
+   ```
+
+
 ## Features
 
 - Simple terminal-based UI for managing SSH tunnels
@@ -67,36 +104,6 @@ tunnels:
       user: "jumpuser"
 ```
 
-## Installation
-
-Run the install script:
-
-```
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/sio2boss/tunnel9/main/tools/install.sh)"
-```
-
-or
-
-1. Download the latest release from the releases page
-2. Extract the archive:
-   ```bash
-   tar xzf tunnel9-*.tar.gz
-   ```
-3. Copy the binary to your local bin directory:
-   ```bash
-   mkdir -p ~/.local/bin
-   mv tunnel9 ~/.local/bin/
-   chmod +x ~/.local/bin/tunnel9
-   ```
-4. Ensure `~/.local/bin` is in your PATH. Add this to your `~/.bashrc` or `~/.zshrc`:
-   ```bash
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-5. Restart your shell or source your rc file:
-   ```bash
-   source ~/.bashrc  # or source ~/.zshrc
-   ```
-
 
 ## Development
 
@@ -126,11 +133,12 @@ make vhs
 ```
 
 
-## Prepairing for a release
+## Preparing for a release
 
 1. Update version number in main.go and tools/install.sh
-2. Run `make release`
+2. Run `make homebrew` (builds releases and updates homebrew formula)
 3. Upload `./release` artifacts to GitHub Release
+4. Update the homebrew tap repository with the new formula from `homebrew/tunnel9.rb`
 
 
 ## Connection State Transitions

@@ -24,3 +24,7 @@ commands
 # Air
 tmp/ 
 **/*.bak
+
+# Test coverage artifacts
+coverage.out
+coverage.html

@@ -223,16 +223,20 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 				t.Metrics.mu.Lock()
 				if err != nil {
 					t.Metrics.Latency = -1
-					// If we can't create a session, the client might be dead
 					t.Metrics.mu.Unlock()
 					t.logf("SSH client health check failed: %v", err)
-					// Don't close the client here since we're in a goroutine
-					// The forward function will detect this and handle reconnection
-				} else {
-					t.Metrics.Latency = time.Since(start)
-					session.Close()
-					t.Metrics.mu.Unlock()
+					// Close the client so the next connection attempt creates a new one
+					t.clientMu.Lock()
+					if t.Client != nil {
+						t.Client.Close()
+						t.Client = nil
+					}
+					t.clientMu.Unlock()
+					continue
 				}
+				t.Metrics.Latency = time.Since(start)
+				session.Close()
+				t.Metrics.mu.Unlock()
 			}
 		}
 	}()

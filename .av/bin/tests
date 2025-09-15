@@ -19,6 +19,6 @@ avAppendSystemPath
 
 #### Put system commands here
 
-cd $AV_ROOT/.. && gotestsum --format-icons hivis  --format testname --hide-summary=all --watch
+cd $AV_ROOT/.. && gotestsum --format-icons hivis  --format testname --hide-summary=all "$@"
 
 #### End commands

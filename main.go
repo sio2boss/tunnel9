@@ -13,7 +13,7 @@ import (
 	"github.com/docopt/docopt-go"
 )
 
-const VERSION string = "1.0.2"
+const VERSION string = "1.0.3"
 const USAGE_CONTENT string = `tunnel9 - SSH Tunnel Manager
 
 Version: %s
@@ -24,7 +24,7 @@ Usage:
 
 Options:
   -h --help        Show this screen.
-  --config=<path>  Path to config file [default: ~/.local/state/tunnel9/config.yaml]`
+  --config=<path>  Path to config file (optional)`
 
 func main() {
 	usage := fmt.Sprintf(USAGE_CONTENT, VERSION)
@@ -34,10 +34,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	configPath := opts["--config"].(string)
-	if configPath == "~/.local/state/tunnel9/config.yaml" {
-		configPath = config.GetDefaultConfigPath()
+	var configPath string
+	if opts["--config"] != nil {
+		configPath = opts["--config"].(string)
 	}
+
+	// Find the appropriate config file using fallback logic
+	configPath = config.FindConfigFile(configPath)
 
 	// Ensure config directory exists
 	configDir := filepath.Dir(configPath)
@@ -57,6 +60,10 @@ func main() {
 	}
 
 	app := ui.NewApp(loader, tunnels)
+
+	// Log which config file is being used
+	app.Logf("Using config file: %s", configPath)
+
 	p := tea.NewProgram(
 		app,
 		tea.WithAltScreen(), // Use alternate screen buffer

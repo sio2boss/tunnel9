@@ -104,6 +104,11 @@ tunnels:
       user: "jumpuser"
 ```
 
+Searches for configuration in the following order:
+ 1. Command line flag `--config`
+ 2. ./.tunnel9.yaml
+ 3. ~/.local/state/tunnel9/config.yaml  <- default
+
 
 ## Development
 

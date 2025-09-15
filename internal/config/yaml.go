@@ -45,6 +45,31 @@ func GetDefaultConfigPath() string {
 	return filepath.Join(homeDir, ".local", "state", "tunnel9", "config.yaml")
 }
 
+// FindConfigFile looks for a config file in the following order:
+// 1. If configPath is provided and file exists, use it
+// 2. Look for .tunnel9.yaml in current directory
+// 3. Fall back to ~/.local/state/tunnel9/config.yaml
+func FindConfigFile(configPath string) string {
+	// If a specific config path is provided, use it
+	if configPath != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			return configPath
+		}
+	}
+
+	// Look for .tunnel9.yaml in current directory
+	currentDir, err := os.Getwd()
+	if err == nil {
+		localConfig := filepath.Join(currentDir, ".tunnel9.yaml")
+		if _, err := os.Stat(localConfig); err == nil {
+			return localConfig
+		}
+	}
+
+	// Fall back to default config path
+	return GetDefaultConfigPath()
+}
+
 func (c *ConfigLoader) Load() ([]TunnelConfig, error) {
 	data, err := os.ReadFile(c.path)
 	if err != nil {

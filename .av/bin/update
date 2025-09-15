@@ -1,0 +1,35 @@
+#! /bin/bash
+
+
+# Import color
+source $AV_CONFIG_DIR/default_imports
+
+# Check for a help flag
+avCheckHelpFlags "$1" "har" "Update dependencies" "\n\
+Usage:\n\
+    update \n\
+\n"
+
+# Import system path
+avAppendSystemPath
+
+#### Put system commands here
+
+cd $AV_ROOT/.. 
+set -e  # Exit on any error
+
+echo "🔄 Updating Go dependencies..."
+
+# Update all dependencies to latest versions
+echo "📦 Running go get -u ./..."
+go get -u ./...
+
+# Clean up and optimize dependencies
+echo "🧹 Running go mod tidy..."
+go mod tidy
+
+echo "✅ Dependencies updated successfully!"
+echo ""
+echo "Updated dependencies can be found in go.mod"
+
+#### End commands

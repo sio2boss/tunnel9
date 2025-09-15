@@ -666,7 +666,7 @@ func (a *App) handleDialogSubmit() {
 			// Only update name and tag for active tunnels
 			selected.Config.Name = a.dialogFields[9].value
 			selected.Config.Tag = a.dialogFields[10].value
-			a.logf("Updated tunnel name/tag: %s", selected.Config.Name)
+			a.Logf("Updated tunnel name/tag: %s", selected.Config.Name)
 			a.updateTableRows()
 			a.saveConfig()
 			a.showDialog = false
@@ -738,7 +738,7 @@ func (a *App) handleDialogSubmit() {
 		// Update existing tunnel
 		selected := &a.tunnels[a.editingIndex]
 		selected.Config = *updatedConfig
-		a.logf("Updated tunnel: %s", updatedConfig.Name)
+		a.Logf("Updated tunnel: %s", updatedConfig.Name)
 	} else {
 		// Create new tunnel record
 		tunnel := TunnelRecord{
@@ -748,7 +748,7 @@ func (a *App) handleDialogSubmit() {
 			Metrics: "--",
 		}
 		a.tunnels = append(a.tunnels, tunnel)
-		a.logf("Added new tunnel: %s", updatedConfig.Name)
+		a.Logf("Added new tunnel: %s", updatedConfig.Name)
 	}
 
 	a.updateTableRows()
@@ -796,7 +796,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Remove the tunnel
 					a.tunnels = append(a.tunnels[:a.deleteIndex], a.tunnels[a.deleteIndex+1:]...)
-					a.logf("Deleted tunnel: %s", selected.Config.Name)
+					a.Logf("Deleted tunnel: %s", selected.Config.Name)
 					a.saveConfig()
 					a.updateTableRows()
 				}
@@ -1606,11 +1606,11 @@ func (a *App) saveConfig() {
 	if err := a.loader.Save(configs); err != nil {
 		a.logError("Failed to save config: %v", err)
 	} else {
-		a.logf("Configuration saved successfully")
+		a.Logf("Configuration saved successfully")
 	}
 }
 
-func (a *App) logf(format string, args ...interface{}) {
+func (a *App) Logf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	a.errorLog = append(a.errorLog, fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg))
 	if len(a.errorLog) > 100 {

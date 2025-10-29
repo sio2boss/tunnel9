@@ -40,7 +40,10 @@ Filtering
 Management
   n: Create new tunnel from SSH string
   e: Edit selected tunnel
-  backspace: Delete selected tunnel
+  ⌫: Delete selected tunnel
+  o: Open browser to selected tunnel's local port
+  SHIFT+a: Start all stopped tunnels
+  SHIFT+c: Stop all active tunnels
 
 Press h or esc to close help`
 

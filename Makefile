@@ -50,15 +50,6 @@ win_arm64:
 update_version:
 	sed -i .bak "s/VERSION=.*/VERSION=$(VERSION)/1" tools/install.sh
 
-clean:
-	rm -f ./tunnel9
-	rm -rf ./release
-	rm -f ./go.sum
-	rm -f coverage.out coverage.html
-
-install: all
-	cp ./tunnel9 ~/.local/bin/
-
 vhs: all
 	cd docs && vhs tui.tape
 

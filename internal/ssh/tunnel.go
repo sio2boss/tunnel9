@@ -65,7 +65,7 @@ func (t *Tunnel) logf(format string, args ...interface{}) {
 		return
 	}
 
-	msg := fmt.Sprintf("[%s] DEBUG %s", t.Config.Name, fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf("DEBUG [%s] %s", t.Config.Name, fmt.Sprintf(format, args...))
 	if t.LogChan != nil {
 		t.LogChan <- fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg)
 	}
@@ -76,7 +76,7 @@ func (t *Tunnel) errorf(format string, args ...interface{}) {
 		return
 	}
 
-	msg := fmt.Sprintf("[%s] ERROR %s", t.Config.Name, fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf("ERROR [%s] %s", t.Config.Name, fmt.Sprintf(format, args...))
 	if t.LogChan != nil {
 		t.LogChan <- fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg)
 	}

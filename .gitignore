@@ -28,3 +28,5 @@ tmp/
 # Test coverage artifacts
 coverage.out
 coverage.html
+.av/.cache/local_hash
+.av/.cache/local_help_cache

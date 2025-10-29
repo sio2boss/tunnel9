@@ -2,6 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,12 +110,6 @@ var (
 			Align(lipgloss.Center).
 			MarginBottom(1)
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9"))
-
-	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("10"))
-
 	consoleStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#2dd4bf")).
@@ -134,7 +131,7 @@ var (
 	controlsStyle = lipgloss.NewStyle()
 )
 
-func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
+func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig, initialTag string) *App {
 
 	tunnels := convertConfigsToRecords(configs)
 
@@ -198,7 +195,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig) *App {
 	app := &App{
 		table:        t,
 		tunnels:      tunnels,
-		currentTag:   "",
+		currentTag:   initialTag,
 		manager:      ssh.NewTunnelManager(),
 		baseColumns:  baseColumns,
 		viewport:     vp,
@@ -375,11 +372,40 @@ func (a *App) getAllFilteredLogs() []string {
 	}
 
 	cursor := a.table.Cursor()
-	if cursor >= len(a.tunnels) {
+
+	// Get the filtered tunnels if there's a tag filter
+	filteredTunnels := a.tunnels
+	if a.currentTag != "" {
+		selectedTags := strings.Split(a.currentTag, ",")
+		filteredTunnels = make([]TunnelRecord, 0)
+		for _, t := range a.tunnels {
+			for _, tag := range selectedTags {
+				if t.Config.Tag == tag {
+					filteredTunnels = append(filteredTunnels, t)
+					break
+				}
+			}
+		}
+	}
+
+	if cursor >= len(filteredTunnels) {
 		return a.errorLog
 	}
 
-	selected := &a.tunnels[cursor]
+	// Find the actual tunnel from the filtered list
+	selectedTunnel := filteredTunnels[cursor]
+	var selected *TunnelRecord
+	for i := range a.tunnels {
+		if a.tunnels[i].ID == selectedTunnel.ID {
+			selected = &a.tunnels[i]
+			break
+		}
+	}
+
+	if selected == nil {
+		return a.errorLog
+	}
+
 	prefix := fmt.Sprintf("[%s]", selected.Config.Name)
 
 	filtered := make([]string, 0)
@@ -434,12 +460,79 @@ func (a *App) getFilteredLogs() []string {
 	return a.getVisibleLogs(a.getAllFilteredLogs())
 }
 
+func (a *App) colorizeLogLine(line string) string {
+	// Color styles for log levels
+	debugStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))    // cyan
+	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))     // red
+	tunnelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("13"))   // pink/magenta
+	timestampStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // grey
+
+	// Parse the line and rebuild with colors
+	// Format: timestamp DEBUG [tunnel-name] message
+	timestampRegex := regexp.MustCompile(`^(\d{2}:\d{2}:\d{2})\s+(DEBUG|ERROR)\s+(\[[^\]]+\])\s+(.*)$`)
+	matches := timestampRegex.FindStringSubmatch(line)
+
+	if len(matches) == 5 {
+		// Format: timestamp LEVEL [tunnel] message
+		timestamp := timestampStyle.Render(matches[1])
+		var level string
+		if matches[2] == "DEBUG" {
+			level = debugStyle.Render(matches[2])
+		} else {
+			level = errorStyle.Render(matches[2])
+		}
+		tunnel := tunnelStyle.Render(matches[3])
+		message := matches[4]
+
+		return fmt.Sprintf("%s %s %s %s", timestamp, level, tunnel, message)
+	}
+
+	// Fallback for lines without tunnel name or different format
+	// Try: timestamp ERROR message
+	simpleErrorRegex := regexp.MustCompile(`^(\d{2}:\d{2}:\d{2})\s+(ERROR)\s+(.*)$`)
+	simpleMatches := simpleErrorRegex.FindStringSubmatch(line)
+	if len(simpleMatches) == 4 {
+		timestamp := timestampStyle.Render(simpleMatches[1])
+		level := errorStyle.Render(simpleMatches[2])
+		message := simpleMatches[3]
+		return fmt.Sprintf("%s %s %s", timestamp, level, message)
+	}
+
+	// If no match, just colorize what we can find
+	// Colorize timestamp if present
+	timestampOnlyRegex := regexp.MustCompile(`^(\d{2}:\d{2}:\d{2})`)
+	line = timestampOnlyRegex.ReplaceAllStringFunc(line, func(match string) string {
+		return timestampStyle.Render(match)
+	})
+
+	// Colorize tunnel name if present
+	tunnelRegex := regexp.MustCompile(`(\[[^\]]+\])`)
+	line = tunnelRegex.ReplaceAllStringFunc(line, func(match string) string {
+		return tunnelStyle.Render(match)
+	})
+
+	// Colorize DEBUG/ERROR
+	if strings.Contains(line, " DEBUG ") {
+		line = strings.ReplaceAll(line, " DEBUG ", " "+debugStyle.Render("DEBUG")+" ")
+	}
+	if strings.Contains(line, " ERROR ") {
+		line = strings.ReplaceAll(line, " ERROR ", " "+errorStyle.Render("ERROR")+" ")
+	}
+
+	return line
+}
+
 func (a *App) updateViewport() {
 	if !a.showConsole {
 		return
 	}
 
-	content := strings.Join(a.getFilteredLogs(), "\n")
+	logs := a.getFilteredLogs()
+	coloredLogs := make([]string, len(logs))
+	for i, log := range logs {
+		coloredLogs[i] = a.colorizeLogLine(log)
+	}
+	content := strings.Join(coloredLogs, "\n")
 	a.viewport.SetContent(content)
 	a.viewport.GotoBottom()
 }
@@ -1311,6 +1404,59 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.privacyMode = !a.privacyMode
 			a.updateTableRows()
 			return a, nil
+		case "o":
+			// Open browser to selected tunnel's local port
+			if !a.showDialog && !a.showTagDialog && !a.showDeleteConfirm && len(a.tunnels) > 0 {
+				cursor := a.table.Cursor()
+
+				// Get the filtered tunnels if there's a tag filter
+				filteredTunnels := a.tunnels
+				if a.currentTag != "" {
+					selectedTags := strings.Split(a.currentTag, ",")
+					filteredTunnels = make([]TunnelRecord, 0)
+					for _, t := range a.tunnels {
+						for _, tag := range selectedTags {
+							if t.Config.Tag == tag {
+								filteredTunnels = append(filteredTunnels, t)
+								break
+							}
+						}
+					}
+				}
+
+				if cursor >= len(filteredTunnels) {
+					return a, nil
+				}
+
+				// Find the actual tunnel from the filtered list
+				selectedTunnel := filteredTunnels[cursor]
+				var selected *TunnelRecord
+				for i := range a.tunnels {
+					if a.tunnels[i].ID == selectedTunnel.ID {
+						selected = &a.tunnels[i]
+						break
+					}
+				}
+
+				if selected != nil {
+					url := fmt.Sprintf("http://localhost:%d", selected.Config.LocalPort)
+					var cmd *exec.Cmd
+					switch runtime.GOOS {
+					case "windows":
+						cmd = exec.Command("cmd", "/c", "start", url)
+					case "darwin":
+						cmd = exec.Command("open", url)
+					default:
+						cmd = exec.Command("xdg-open", url)
+					}
+					if err := cmd.Start(); err != nil {
+						a.logError("Failed to open browser: %v", err)
+					} else {
+						a.Logf("Opened %s in browser", url)
+					}
+				}
+				return a, nil
+			}
 		case "w":
 			a.isWideMode = !a.isWideMode
 			// Update columns based on mode
@@ -1347,6 +1493,66 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.updateTableRows()
 			return a, nil
+		case "A":
+			// Start all stopped tunnels
+			if !a.showDialog && !a.showTagDialog && !a.showDeleteConfirm {
+				startedCount := 0
+				for i := range a.tunnels {
+					tunnel := &a.tunnels[i]
+					if tunnel.Status == "stopped" || tunnel.Status == "error" {
+						t := a.manager.CreateTunnel(tunnel.ID, tunnel.Config)
+						if t == nil {
+							tunnel.Status = "error"
+							tunnel.Metrics = "failed to start"
+							a.logError("Failed to start tunnel to %s", tunnel.Config.RemoteHost)
+						} else {
+							tunnel.Status = "connecting"
+							tunnel.Metrics = "initializing"
+							a.manager.StartTunnel(t)
+							startedCount++
+						}
+					}
+				}
+				if startedCount > 0 {
+					a.Logf("Started %d tunnel(s)", startedCount)
+				}
+				a.updateTableRows()
+				return a, nil
+			}
+		case "C":
+			// Stop all active tunnels in background
+			if !a.showDialog && !a.showTagDialog && !a.showDeleteConfirm {
+				toStop := make([]*TunnelRecord, 0)
+				for i := range a.tunnels {
+					tunnel := &a.tunnels[i]
+					if tunnel.Status == "active" || tunnel.Status == "connecting" {
+						toStop = append(toStop, tunnel)
+						// Update status immediately for responsive UI
+						tunnel.Status = "stopping"
+						tunnel.Metrics = "stopping..."
+					}
+				}
+				if len(toStop) > 0 {
+					a.Logf("Stopping %d tunnel(s)...", len(toStop))
+					// Stop tunnels in background goroutines
+					for _, tunnel := range toStop {
+						go func(t *TunnelRecord) {
+							err := a.manager.StopTunnel(t.ID)
+							if err != nil {
+								t.Status = "error"
+								t.Metrics = fmt.Sprintf("stop: %v", err)
+							} else {
+								t.Status = "stopped"
+								t.Metrics = "stopped"
+							}
+							// Note: updateTableRows() is called by the tick handler,
+							// so the UI will update automatically on the next tick
+						}(tunnel)
+					}
+				}
+				a.updateTableRows()
+				return a, nil
+			}
 		}
 	}
 
@@ -1541,8 +1747,36 @@ func (a *App) View() string {
 
 	var s string
 
-	// Add title
-	s += titleStyle.Render("tunnel9 - SSH Tunnel Manager") + "\n"
+	// Add title with optional right-aligned tags
+	titleText := "tunnel9 - SSH Tunnel Manager"
+	if a.currentTag != "" {
+		tagStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color("#2dd4bf")). // same as titleStyle foreground
+			Foreground(lipgloss.Color("0")).       // black text
+			Padding(0, 2)
+		tagText := tagStyle.Render(a.currentTag)
+
+		// Align tag's right edge with log panel's right edge (log panel width is a.width - 2)
+		tagWidth := lipgloss.Width(tagText)
+		rightEdgePos := a.width - 2
+		spacing := rightEdgePos - len(titleText) - tagWidth
+		if spacing > 0 {
+			titleText = titleText + strings.Repeat(" ", spacing) + tagText
+		} else {
+			titleText = titleText + "  " + tagText
+		}
+		// Use left-align style to position title on left and tag on right
+		titleLeftStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#2dd4bf")).
+			Align(lipgloss.Left).
+			MarginBottom(1)
+		s += titleLeftStyle.Width(a.width).Render(titleText) + "\n"
+	} else {
+		s += titleStyle.Render(titleText) + "\n"
+	}
+	// Add a bit more space before the table
+	s += "\n"
 
 	// Table (no extra newlines)
 	s += a.table.View()
@@ -1562,29 +1796,45 @@ func (a *App) View() string {
 	}
 
 	// Bottom status without sort info
-	controls := controlsStyle.Render("↑/↓:select • enter:toggle • </>:sort")
-	if strings.Count(strings.Join(a.errorLog, ""), "ERROR") > 0 {
-		controls += controlsStyle.Foreground(lipgloss.Color("227")).Render(" • l:log")
+	// Color just the first letter of each word with selected style color
+	selectedColorStyle := controlsStyle.Foreground(lipgloss.Color("#2dd4bf"))
+	upDownText := selectedColorStyle.Render("↑/↓") + ":select"
+	enterText := selectedColorStyle.Render("enter") + ":toggle"
+	sortText := selectedColorStyle.Render("</>") + ":sort"
+	openText := selectedColorStyle.Render("o") + "pen"
+	logText := selectedColorStyle.Render("l") + "og"
+	filterText := ""
+	if a.showConsole && a.filterLogs {
+		filterText = selectedColorStyle.Render("u") + "nfilter"
 	} else {
-		controls += controlsStyle.Render(" • l:log")
+		filterText = selectedColorStyle.Render("f") + "ilter"
+	}
+	autoText := ""
+	if a.showConsole {
+		if a.autoScroll {
+			autoText = selectedColorStyle.Render("a") + "uto"
+		} else {
+			autoText = selectedColorStyle.Render("m") + "anual"
+		}
+	}
+	helpText := selectedColorStyle.Render("h") + "elp"
+	tagsText := selectedColorStyle.Render("t") + "ags"
+	wideText := selectedColorStyle.Render("w") + "ide"
+	quitText := selectedColorStyle.Render("q") + "uit"
+	scrollText := selectedColorStyle.Render("[/]") + ":scroll"
+
+	controls := controlsStyle.Render(upDownText + " • " + enterText + " • " + sortText + " • " + openText)
+	if strings.Count(strings.Join(a.errorLog, ""), "ERROR") > 0 {
+		controls += controlsStyle.Foreground(lipgloss.Color("227")).Render(" • " + logText)
+	} else {
+		controls += controlsStyle.Render(" • " + logText)
 	}
 	if a.showConsole {
-		if a.filterLogs {
-			controls += controlsStyle.Foreground(lipgloss.Color("227")).Render(" • f:unfilter")
-		} else {
-			controls += controlsStyle.Render(" • f:filter")
-		}
-		controls += controlsStyle.Render(" • [/]:scroll")
-		if a.autoScroll {
-			controls += controlsStyle.Render(" • a:auto")
-		} else {
-			controls += controlsStyle.Foreground(lipgloss.Color("227")).Render(" • a:manual")
-		}
+		controls += controlsStyle.Render(" • " + filterText)
+		controls += controlsStyle.Render(" • " + scrollText)
+		controls += controlsStyle.Render(" • " + autoText)
 	}
-	controls += controlsStyle.Render(" • h:help • t:tags • w:wide • q:quit")
-	if a.currentTag != "" {
-		controls += controlsStyle.Render(fmt.Sprintf(" | Tag Filter: %s", a.currentTag))
-	}
+	controls += controlsStyle.Render(" • " + helpText + " • " + tagsText + " • " + wideText + " • " + quitText)
 	s += controls
 
 	// Add console if enabled

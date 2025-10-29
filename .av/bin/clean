@@ -1,0 +1,25 @@
+#! /bin/bash
+
+
+# Import color
+source $AV_CONFIG_DIR/default_imports
+source $AV_CONFIG_DIR/findjar
+
+# Check for a help flag
+avCheckHelpFlags "$1" "tunnel9" "clean the build artifacts" "\n \
+    Clean the build artifacts.\n \
+\n"
+
+# Import system path
+
+#### Put system commands here
+
+avAppendSystemPath
+
+cd $AV_PROJ_TOP && rm -f ./tunnel9 && \
+	rm -rf ./release && \
+	rm -f ./go.sum  && \
+	rm -f coverage.out coverage.html && \
+	go mod tidy
+
+#### End commands

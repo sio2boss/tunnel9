@@ -19,12 +19,13 @@ const USAGE_CONTENT string = `tunnel9 - SSH Tunnel Manager
 Version: %s
 
 Usage:
-  tunnel9 [--config=<path>]
+  tunnel9 [--config=<path>] [--tag=<tag>]
   tunnel9 -h | --help
 
 Options:
   -h --help        Show this screen.
-  --config=<path>  Path to config file (optional)`
+  --config=<path>  Path to config file (optional)
+  -t, --tag=<tag>  Tag to filter tunnels by on startup (optional)`
 
 func main() {
 	usage := fmt.Sprintf(USAGE_CONTENT, VERSION)
@@ -59,7 +60,13 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
-	app := ui.NewApp(loader, tunnels)
+	// Parse tag option
+	var initialTag string
+	if opts["--tag"] != nil {
+		initialTag = opts["--tag"].(string)
+	}
+
+	app := ui.NewApp(loader, tunnels, initialTag)
 
 	// Log which config file is being used
 	app.Logf("Using config file: %s", configPath)

@@ -6,17 +6,18 @@ source $AV_CONFIG_DIR/default_imports
 source $AV_CONFIG_DIR/findjar
 
 # Check for a help flag
-avCheckHelpFlags "$1" "tunnel9" "prepare for building docker containers" "\n \
-    Template to help you out.\n \
+avCheckHelpFlags "$1" "tunnel9" "run tunnel9 in development mode" "\n \
+    run tunnel9 in development mode\n \
 \n"
 
 # Import system path
-avAppendSystemPath
 
 #### Put system commands here
 
-go mod tidy
-avRestoreSystemPath
 make
+
+avAppendSystemPath
+
+cd $AV_PROJ_TOP && ./tunnel9 $*
 
 #### End commands

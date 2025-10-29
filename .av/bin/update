@@ -5,9 +5,9 @@
 source $AV_CONFIG_DIR/default_imports
 
 # Check for a help flag
-avCheckHelpFlags "$1" "har" "Update dependencies" "\n\
+avCheckHelpFlags "$1" "tunnel9" "Update dependencies" "\n\
 Usage:\n\
-    update \n\
+    update golang dependencies\n\
 \n"
 
 # Import system path

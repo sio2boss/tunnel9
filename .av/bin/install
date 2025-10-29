@@ -6,15 +6,16 @@ source $AV_CONFIG_DIR/default_imports
 source $AV_CONFIG_DIR/findjar
 
 # Check for a help flag
-avCheckHelpFlags "$1" "builtin" "template script" "\n \
+avCheckHelpFlags "$1" "tunnel9" "install tunnel9 for the local system" "\n \
     Template to help you out.\n \
 \n"
 
 # Import system path
-avAppendSystemPath
 
 #### Put system commands here
+avAppendSystemPath
 
-cd $AV_ROOT/.. && make && ./tunnel9
+cd $AV_PROJ_TOP && cp ./tunnel9 ~/.local/bin/
+echo "tunnel9 installed to ~/.local/bin/tunnel9"
 
 #### End commands

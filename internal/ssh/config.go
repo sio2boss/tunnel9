@@ -94,9 +94,17 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 		filepath.Join(home, ".ssh", "id_rsa"),
 	}
 
-	// Set User from config or environment variable
+	// Set User: for IAP tunnels derive from the gcloud account; otherwise use config or $USER
 	sshUser := t.Config.Bastion.User
-	if t.Config.Bastion.User == "" {
+	if sshUser == "" && t.Config.GcpIap != nil {
+		resolved, err := ResolveIAPUser(t.Config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve IAP SSH user: %w", err)
+		}
+		sshUser = resolved
+		t.logf("Resolved IAP SSH user from gcloud account: %s", sshUser)
+	}
+	if sshUser == "" {
 		sshUser = os.Getenv("USER")
 	}
 

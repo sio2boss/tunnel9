@@ -20,6 +20,18 @@ type TunnelConfig struct {
 		User string `yaml:"user"`
 		Port int    `yaml:"port,omitempty"`
 	} `yaml:"bastion,omitempty"`
+	GcpIap *GcpIapConfig `yaml:"gcp_iap,omitempty"`
+}
+
+// GcpIapConfig holds GCP Identity-Aware Proxy tunnel settings.
+// When set, the bastion connection uses IAP instead of direct SSH.
+// Project and GcloudConfiguration are required: the tunnel uses that gcloud
+// configuration's account so the identity is authorized for the project.
+type GcpIapConfig struct {
+	Zone                 string `yaml:"zone"`
+	Project              string `yaml:"project,omitempty"`
+	GcloudConfiguration  string `yaml:"gcloud_configuration,omitempty"` // gcloud config name for auth; defaults to project if empty
+	Interface            string `yaml:"interface,omitempty"`            // e.g. "nic0", default used by iapc if empty
 }
 
 type Config struct {

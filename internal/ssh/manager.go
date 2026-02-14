@@ -84,27 +84,28 @@ func (tm *TunnelManager) CreateTunnel(id string, config config.TunnelConfig) *Tu
 }
 
 func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
+	// Start goroutine to forward tunnel logs to manager's log channel
+	// (must be before any calls that might log, so messages aren't lost)
+	go func() {
+		for msg := range tunnel.LogChan {
+			tm.LogChan <- msg
+		}
+	}()
+
 	// Get SSH config
 	sshconfig, err := GetSSHConfig(tunnel)
 	if err != nil {
-		tunnel.errorf("failed to get SSH config")
-		return fmt.Errorf("failed to get SSH config")
+		tunnel.errorf("failed to get SSH config: %v", err)
+		return fmt.Errorf("failed to get SSH config: %w", err)
 	}
 
 	// Start local listener
 	localEndpoint := NewEndpoint(tunnel.Config.BindAddress, tunnel.Config.LocalPort, "localhost")
 	tunnel.Listener, err = net.Listen("tcp", localEndpoint.String())
 	if err != nil {
-		tunnel.errorf("failed to listen on port %d", tunnel.Config.LocalPort)
-		return fmt.Errorf("failed to listen on port %d", tunnel.Config.LocalPort)
+		tunnel.errorf("failed to listen on port %d: %v", tunnel.Config.LocalPort, err)
+		return fmt.Errorf("failed to listen on port %d: %w", tunnel.Config.LocalPort, err)
 	}
-
-	// Start goroutine to forward tunnel logs to manager's log channel
-	go func() {
-		for msg := range tunnel.LogChan {
-			tm.LogChan <- msg
-		}
-	}()
 
 	// Start the tunnel
 	go tunnel.connect(sshconfig)

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -80,6 +81,7 @@ type App struct {
 	logCursor         int  // Track position in logs for scrolling
 	autoScroll        bool // Whether to auto-scroll to bottom
 	isWideMode        bool // Whether to show wide or compact view
+	dialogError       string // Inline error shown in the dialog
 }
 
 func convertConfigsToRecords(configs []config.TunnelConfig) []TunnelRecord {
@@ -151,7 +153,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig, initialT
 	// Create columns with initial widths for compact mode
 	columns := []table.Column{
 		{Title: baseColumns[0], Width: 8},  // STATUS
-		{Title: baseColumns[1], Width: 20}, // NAME
+		{Title: baseColumns[1], Width: 30}, // NAME
 		{Title: "TUNNEL", Width: 30},       // Combined LOCAL:HOST:REMOTE
 		{Title: baseColumns[7], Width: 12}, // TAG
 		{Title: baseColumns[8], Width: 40}, // MESSAGE
@@ -201,7 +203,7 @@ func NewApp(loader *config.ConfigLoader, configs []config.TunnelConfig, initialT
 		viewport:     vp,
 		filterLogs:   false,
 		showDialog:   false,
-		dialogFields: make([]dialogField, 12),
+		dialogFields: make([]dialogField, 13),
 		activeField:  0,
 		loader:       loader,
 		selectedTags: make(map[string]bool),
@@ -319,8 +321,11 @@ func (a *App) updateTableRows() {
 			if remoteHost == "localhost" && t.Config.Bastion.Host != "" {
 				shortRemoteHost = bastionHost
 			}
-			if idx := strings.Index(shortRemoteHost, "."); idx > 0 {
-				shortRemoteHost = shortRemoteHost[:idx]
+			// Only shorten domain names (strip after first dot); leave IP addresses intact
+			if net.ParseIP(shortRemoteHost) == nil {
+				if idx := strings.Index(shortRemoteHost, "."); idx > 0 {
+					shortRemoteHost = shortRemoteHost[:idx]
+				}
 			}
 
 			tunnel := fmt.Sprintf("%d:%s:%d", t.Config.LocalPort, shortRemoteHost, t.Config.RemotePort)
@@ -636,8 +641,164 @@ func parseSshString(sshStr string) (*config.TunnelConfig, error) {
 	return &config, nil
 }
 
+// parseGcloudSshString parses a gcloud compute ssh --tunnel-through-iap command string
+// and returns a TunnelConfig with GcpIap set. Returns nil, nil if the string does not
+// look like a gcloud IAP SSH command. Normalizes newlines so multi-line pastes work.
+func parseGcloudSshString(s string) (*config.TunnelConfig, error) {
+	// Normalize multi-line pastes: newlines and multiple spaces to single space
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.TrimSpace(s)
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	if !strings.Contains(s, "gcloud") || !strings.Contains(s, "compute") ||
+		!strings.Contains(s, "ssh") || !strings.Contains(s, "tunnel-through-iap") {
+		return nil, nil
+	}
+
+	// Parse --zone=value (required)
+	var zone string
+	if i := strings.Index(s, "--zone="); i >= 0 {
+		i += len("--zone=")
+		end := i
+		for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != '\n' {
+			end++
+		}
+		zone = strings.TrimSpace(s[i:end])
+	}
+	if zone == "" {
+		return nil, fmt.Errorf("gcloud IAP command requires --zone=...")
+	}
+
+	// Parse --project=value (optional here; required at dial time)
+	var project string
+	if i := strings.Index(s, "--project="); i >= 0 {
+		i += len("--project=")
+		end := i
+		for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != '\n' {
+			end++
+		}
+		project = strings.TrimSpace(s[i:end])
+	}
+
+	// Find instance name: first non-flag argument after "ssh"
+	parts := strings.Fields(s)
+	var instance string
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "ssh" && i+1 < len(parts) {
+			for j := i + 1; j < len(parts); j++ {
+				if !strings.HasPrefix(parts[j], "-") {
+					instance = parts[j]
+					break
+				}
+			}
+			break
+		}
+	}
+	if instance == "" {
+		return nil, fmt.Errorf("gcloud IAP command: instance name not found")
+	}
+	// Strip user@ prefix if present for bastion user
+	bastionUser := ""
+	if at := strings.Index(instance, "@"); at > 0 {
+		bastionUser = instance[:at]
+		instance = instance[at+1:]
+	}
+
+	// Parse --ssh-flag="-N -L ..." or --ssh-flag='-N -L ...'
+	var portMapping string
+	if i := strings.Index(s, "--ssh-flag="); i >= 0 {
+		i += len("--ssh-flag=")
+		quote := byte(0)
+		if i < len(s) && (s[i] == '"' || s[i] == '\'') {
+			quote = s[i]
+			i++
+		}
+		end := i
+		for end < len(s) {
+			if quote != 0 {
+				if s[end] == quote {
+					end++
+					break
+				}
+			} else if s[end] == ' ' || s[end] == '\t' || s[end] == '\n' {
+				break
+			}
+			end++
+		}
+		flagVal := s[i:end]
+		if quote != 0 && len(flagVal) > 0 && flagVal[len(flagVal)-1] == quote {
+			flagVal = flagVal[:len(flagVal)-1]
+		}
+		// Find -L in the flag value
+		subParts := strings.Fields(flagVal)
+		for j := 0; j < len(subParts)-1; j++ {
+			if subParts[j] == "-L" {
+				portMapping = subParts[j+1]
+				break
+			}
+		}
+	}
+	if portMapping == "" {
+		return nil, fmt.Errorf("gcloud IAP command: no -L port mapping in --ssh-flag")
+	}
+
+	portParts := strings.Split(portMapping, ":")
+	var localPort int
+	var remoteHost string
+	var remotePort int
+	var bindAddr string
+	var err error
+	switch len(portParts) {
+	case 4:
+		bindAddr = portParts[0]
+		localPort, err = strconv.Atoi(portParts[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid local port: %v", err)
+		}
+		remoteHost = portParts[2]
+		remotePort, err = strconv.Atoi(portParts[3])
+		if err != nil {
+			return nil, fmt.Errorf("invalid remote port: %v", err)
+		}
+	case 3:
+		localPort, err = strconv.Atoi(portParts[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid local port: %v", err)
+		}
+		remoteHost = portParts[1]
+		remotePort, err = strconv.Atoi(portParts[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid remote port: %v", err)
+		}
+	default:
+		return nil, fmt.Errorf("invalid port mapping format")
+	}
+	if remoteHost == "" {
+		return nil, fmt.Errorf("remote host cannot be empty")
+	}
+
+	tc := &config.TunnelConfig{
+		Name:        fmt.Sprintf("%s-%d", remoteHost, localPort),
+		LocalPort:   localPort,
+		RemotePort:  remotePort,
+		RemoteHost:  remoteHost,
+		BindAddress: bindAddr,
+		GcpIap: &config.GcpIapConfig{
+			Zone:    zone,
+			Project: project,
+		},
+	}
+	tc.Bastion.Host = instance
+	tc.Bastion.User = bastionUser
+	tc.Bastion.Port = 22
+	return tc, nil
+}
+
 func (a *App) initDialog(mode dialogMode) {
 	a.dialogMode = mode
+	a.dialogError = ""
 	a.dialogFields = []dialogField{
 		{label: "Input Mode", value: "fields", cursor: 0, isHidden: true},
 		{label: "SSH Command", value: "", cursor: 0, isHidden: true},
@@ -650,6 +811,9 @@ func (a *App) initDialog(mode dialogMode) {
 		{label: "Bastion User (optional)", value: "", cursor: 0},
 		{label: "Name", value: "", cursor: 0},
 		{label: "Tag", value: "", cursor: 0},
+		{label: "GCP Zone", value: "", cursor: 0},
+		{label: "GCP Project ID (required)", value: "", cursor: 0},
+		{label: "GCP gcloud config", value: "", cursor: 0},
 	}
 
 	if mode == modeEdit {
@@ -693,24 +857,41 @@ func (a *App) initDialog(mode dialogMode) {
 
 		// Fill in both SSH command and individual fields
 		var sshCmd string
-		if selected.Config.BindAddress != "" {
-			sshCmd = fmt.Sprintf("ssh -N -L %s:%d:%s:%d",
-				selected.Config.BindAddress,
-				selected.Config.LocalPort,
-				selected.Config.RemoteHost,
-				selected.Config.RemotePort)
+		if selected.Config.GcpIap != nil {
+			instance := selected.Config.Bastion.Host
+			if selected.Config.Bastion.User != "" {
+				instance = selected.Config.Bastion.User + "@" + instance
+			}
+			sshCmd = fmt.Sprintf("gcloud compute ssh %s --tunnel-through-iap --zone=%s",
+				instance, selected.Config.GcpIap.Zone)
+			if selected.Config.GcpIap.Project != "" {
+				sshCmd += fmt.Sprintf(" --project=%s", selected.Config.GcpIap.Project)
+			}
+			portMap := fmt.Sprintf("%d:%s:%d", selected.Config.LocalPort, selected.Config.RemoteHost, selected.Config.RemotePort)
+			if selected.Config.BindAddress != "" {
+				portMap = fmt.Sprintf("%s:%d:%s:%d", selected.Config.BindAddress, selected.Config.LocalPort, selected.Config.RemoteHost, selected.Config.RemotePort)
+			}
+			sshCmd += fmt.Sprintf(" --ssh-flag=\"-N -L %s\"", portMap)
 		} else {
-			sshCmd = fmt.Sprintf("ssh -N -L %d:%s:%d",
-				selected.Config.LocalPort,
-				selected.Config.RemoteHost,
-				selected.Config.RemotePort)
-		}
-		if selected.Config.Bastion.Host != "" {
-			sshCmd += fmt.Sprintf(" %s@%s",
-				selected.Config.Bastion.User,
-				selected.Config.Bastion.Host)
-			if selected.Config.Bastion.Port != 22 {
-				sshCmd += fmt.Sprintf(":%d", selected.Config.Bastion.Port)
+			if selected.Config.BindAddress != "" {
+				sshCmd = fmt.Sprintf("ssh -N -L %s:%d:%s:%d",
+					selected.Config.BindAddress,
+					selected.Config.LocalPort,
+					selected.Config.RemoteHost,
+					selected.Config.RemotePort)
+			} else {
+				sshCmd = fmt.Sprintf("ssh -N -L %d:%s:%d",
+					selected.Config.LocalPort,
+					selected.Config.RemoteHost,
+					selected.Config.RemotePort)
+			}
+			if selected.Config.Bastion.Host != "" {
+				sshCmd += fmt.Sprintf(" %s@%s",
+					selected.Config.Bastion.User,
+					selected.Config.Bastion.Host)
+				if selected.Config.Bastion.Port != 22 {
+					sshCmd += fmt.Sprintf(":%d", selected.Config.Bastion.Port)
+				}
 			}
 		}
 
@@ -734,7 +915,25 @@ func (a *App) initDialog(mode dialogMode) {
 		a.dialogFields[9].cursor = len(selected.Config.Name)
 		a.dialogFields[10].value = selected.Config.Tag
 		a.dialogFields[10].cursor = len(selected.Config.Tag)
-
+		if selected.Config.GcpIap != nil {
+			a.dialogFields[11].value = selected.Config.GcpIap.Zone
+			a.dialogFields[11].cursor = len(selected.Config.GcpIap.Zone)
+			a.dialogFields[12].value = selected.Config.GcpIap.Project
+			a.dialogFields[12].cursor = len(selected.Config.GcpIap.Project)
+			a.dialogFields[13].value = selected.Config.GcpIap.GcloudConfiguration
+			a.dialogFields[13].cursor = len(selected.Config.GcpIap.GcloudConfiguration)
+			a.dialogFields[0].value = "gcloud"
+			a.dialogFields[1].isHidden = false
+			for i := 2; i <= 8; i++ {
+				a.dialogFields[i].isHidden = true
+			}
+		} else {
+			a.dialogFields[0].value = "ssh"
+			a.dialogFields[1].isHidden = false
+			for i := 2; i <= 8; i++ {
+				a.dialogFields[i].isHidden = true
+			}
+		}
 	}
 
 	// Set active field to first visible field
@@ -767,23 +966,75 @@ func (a *App) handleDialogSubmit() {
 		}
 	}
 
-	if a.dialogFields[0].value == "ssh" {
-		// Parse from SSH command
-		updatedConfig, err = parseSshString(a.dialogFields[1].value)
+	a.dialogError = "" // Clear previous error
+	if a.dialogFields[0].value == "gcloud" {
+		// Parse only gcloud IAP command (check field 1 first, then field 9 in case user pasted in Name)
+		input := strings.TrimSpace(a.dialogFields[1].value)
+		if input == "" && strings.Contains(a.dialogFields[9].value, "gcloud") && strings.Contains(a.dialogFields[9].value, "tunnel-through-iap") {
+			input = strings.TrimSpace(a.dialogFields[9].value)
+		}
+		updatedConfig, err = parseGcloudSshString(input)
 		if err != nil {
-			a.errorLog = append(a.errorLog, fmt.Sprintf("Error parsing SSH string: %v", err))
+			a.dialogError = fmt.Sprintf("Error: %v", err)
 			return
+		}
+		if updatedConfig == nil {
+			if input == "" {
+				a.dialogError = "Paste your gcloud command in the Gcloud Command field (press / until you see it), then Enter"
+			} else {
+				a.dialogError = "Invalid gcloud IAP command: need --zone=... and --ssh-flag=\"-N -L localPort:remoteHost:remotePort\""
+			}
+			return
+		}
+		// Populate dialog fields from parsed config only if the user hasn't typed something there already
+		if updatedConfig.GcpIap != nil {
+			if a.dialogFields[11].value == "" {
+				a.dialogFields[11].value = updatedConfig.GcpIap.Zone
+			}
+			if a.dialogFields[12].value == "" {
+				a.dialogFields[12].value = updatedConfig.GcpIap.Project
+			}
+			// GcloudConfiguration is not in the pasted command; user must set it
+			if a.dialogFields[13].value == "" {
+				a.dialogFields[13].value = updatedConfig.GcpIap.GcloudConfiguration
+			}
+		}
+	} else if a.dialogFields[0].value == "ssh" {
+		// Try gcloud IAP command first, then plain SSH
+		updatedConfig, err = parseGcloudSshString(a.dialogFields[1].value)
+		if err != nil {
+			a.dialogError = fmt.Sprintf("Error: %v", err)
+			return
+		}
+		if updatedConfig == nil {
+			updatedConfig, err = parseSshString(a.dialogFields[1].value)
+			if err != nil {
+				a.dialogError = fmt.Sprintf("Error: %v", err)
+				return
+			}
+		}
+		// Populate dialog fields from parsed config only if the user hasn't typed something there already
+		if updatedConfig != nil && updatedConfig.GcpIap != nil {
+			if a.dialogFields[11].value == "" {
+				a.dialogFields[11].value = updatedConfig.GcpIap.Zone
+			}
+			if a.dialogFields[12].value == "" {
+				a.dialogFields[12].value = updatedConfig.GcpIap.Project
+			}
+			if a.dialogFields[13].value == "" {
+				a.dialogFields[13].value = updatedConfig.GcpIap.GcloudConfiguration
+			}
 		}
 	} else {
 		// Parse from individual fields
 		localPort, err := strconv.Atoi(a.dialogFields[3].value)
 		if err != nil {
-			a.errorLog = append(a.errorLog, "Invalid local port")
+			a.dialogError = "Invalid local port"
 			return
 		}
 		remotePort, err := strconv.Atoi(a.dialogFields[5].value)
 		if err != nil {
-			a.errorLog = append(a.errorLog, "Invalid remote port")
+			a.dialogError = "Invalid remote port"
 			return
 		}
 
@@ -792,13 +1043,13 @@ func (a *App) handleDialogSubmit() {
 			User string `yaml:"user"`
 			Port int    `yaml:"port,omitempty"`
 		}
-		if a.dialogFields[6].value != "" && a.dialogFields[8].value != "" {
+		if a.dialogFields[6].value != "" {
 			bastion.Host = a.dialogFields[6].value
 			bastion.User = a.dialogFields[8].value
 			if a.dialogFields[7].value != "" {
 				port, err := strconv.Atoi(a.dialogFields[7].value)
 				if err != nil {
-					a.logError("Invalid bastion port number")
+					a.dialogError = "Invalid bastion port number"
 					return
 				}
 				bastion.Port = port
@@ -814,6 +1065,13 @@ func (a *App) handleDialogSubmit() {
 			BindAddress: a.dialogFields[2].value,
 			Bastion:     bastion,
 		}
+		if a.dialogFields[11].value != "" {
+			updatedConfig.GcpIap = &config.GcpIapConfig{
+				Zone:                strings.TrimSpace(a.dialogFields[11].value),
+				Project:             strings.TrimSpace(a.dialogFields[12].value),
+				GcloudConfiguration: strings.TrimSpace(a.dialogFields[13].value),
+			}
+		}
 
 		// Set default name if not provided
 		if updatedConfig.Name == "" {
@@ -826,6 +1084,22 @@ func (a *App) handleDialogSubmit() {
 		updatedConfig.Name = a.dialogFields[9].value
 	}
 	updatedConfig.Tag = a.dialogFields[10].value
+
+	// Always apply GCP Zone/Project/gcloud_config from dialog fields (they may have been edited independently)
+	gcpZone := strings.TrimSpace(a.dialogFields[11].value)
+	gcpProject := strings.TrimSpace(a.dialogFields[12].value)
+	gcpGcloudConfig := strings.TrimSpace(a.dialogFields[13].value)
+	if gcpZone != "" {
+		if updatedConfig.GcpIap == nil {
+			updatedConfig.GcpIap = &config.GcpIapConfig{}
+		}
+		updatedConfig.GcpIap.Zone = gcpZone
+		updatedConfig.GcpIap.Project = gcpProject
+		updatedConfig.GcpIap.GcloudConfiguration = gcpGcloudConfig
+	} else if (gcpProject != "" || gcpGcloudConfig != "") && updatedConfig.GcpIap != nil {
+		updatedConfig.GcpIap.Project = gcpProject
+		updatedConfig.GcpIap.GcloudConfiguration = gcpGcloudConfig
+	}
 
 	if a.dialogMode == modeEdit {
 		// Update existing tunnel
@@ -907,31 +1181,44 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.showDialog {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
+			// Handle "/" for mode cycle: fields -> gcloud -> ssh -> fields (so one "/" from new dialog gives Gcloud)
+			if msg.String() == "/" {
+				switch a.dialogFields[0].value {
+				case "fields":
+					a.dialogFields[0].value = "gcloud"
+					for i := 2; i <= 8; i++ {
+						a.dialogFields[i].isHidden = true
+					}
+					a.dialogFields[1].isHidden = false
+					a.activeField = 1
+				case "gcloud":
+					a.dialogFields[0].value = "ssh"
+					a.activeField = 1
+				case "ssh":
+					a.dialogFields[0].value = "fields"
+					for i := 2; i <= 8; i++ {
+						a.dialogFields[i].isHidden = false
+					}
+					a.dialogFields[1].isHidden = true
+					a.activeField = 2
+				default:
+					a.dialogFields[0].value = "gcloud"
+					for i := 2; i <= 8; i++ {
+						a.dialogFields[i].isHidden = true
+					}
+					a.dialogFields[1].isHidden = false
+					a.activeField = 1
+				}
+				return a, nil
+			}
+
 			switch msg.Type {
 			case tea.KeyRunes:
-				switch string(msg.Runes) {
-				case "/":
-					// Toggle input mode
-					if a.dialogFields[0].value == "ssh" {
-						a.dialogFields[0].value = "fields"
-						// Show individual fields
-						for i := 2; i <= 8; i++ {
-							a.dialogFields[i].isHidden = false
-						}
-						a.dialogFields[1].isHidden = true // Hide SSH command
-						// Select first visible field (Bind Address)
-						a.activeField = 2
-					} else {
-						a.dialogFields[0].value = "ssh"
-						// Hide individual fields
-						for i := 2; i <= 8; i++ {
-							a.dialogFields[i].isHidden = true
-						}
-						a.dialogFields[1].isHidden = false // Show SSH command
-						// Select SSH command field
-						a.activeField = 1
-					}
+				// Don't insert "/" into the field when it was used for mode toggle (already handled above)
+				if string(msg.Runes) == "/" {
 					return a, nil
+				}
+				switch string(msg.Runes) {
 				default:
 					// Handle normal text input
 					field := &a.dialogFields[a.activeField]
@@ -1379,6 +1666,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.initDialog(modeNew)
 				return a, nil
 			}
+		case "G":
+			// New tunnel in Gcloud mode (paste gcloud IAP command)
+			if !a.showDialog {
+				a.showDialog = true
+				a.initDialog(modeNew)
+				a.dialogFields[0].value = "gcloud"
+				a.dialogFields[1].isHidden = false
+				for i := 2; i <= 8; i++ {
+					a.dialogFields[i].isHidden = true
+				}
+				a.activeField = 1
+				return a, nil
+			}
 		case "e":
 			if !a.showDialog && len(a.tunnels) > 0 {
 				cursor := a.table.Cursor()
@@ -1480,7 +1780,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.table.SetRows([]table.Row{})
 				columns := []table.Column{
 					{Title: a.baseColumns[0], Width: 8},  // STATUS
-					{Title: a.baseColumns[1], Width: 25}, // NAME
+					{Title: a.baseColumns[1], Width: 35}, // NAME
 					{Title: "TUNNEL", Width: 40},         // Combined LOCAL:HOST:REMOTE
 					{Title: a.baseColumns[7], Width: 12}, // TAG
 					{Title: a.baseColumns[8], Width: 40}, // MESSAGE
@@ -1675,13 +1975,30 @@ func (a *App) View() string {
 		if a.dialogMode == modeEdit {
 			title = "Edit Tunnel"
 		}
-		content := dialogActiveStyle.Render(title) + "\n\n"
+		content := dialogActiveStyle.Render(title) + "\n"
+		// Show current input mode so "/" cycle is visible (Fields -> SSH -> Gcloud -> Fields)
+		modeLabel := a.dialogFields[0].value
+		switch modeLabel {
+		case "ssh":
+			modeLabel = "SSH"
+		case "gcloud":
+			modeLabel = "Gcloud"
+		case "fields":
+			modeLabel = "Fields"
+		}
+		content += fmt.Sprintf("Input mode: %s  (press / to cycle)\n\n", modeLabel)
 
-		// Find the longest label for alignment
+		// Find the longest label for alignment (field 1 label varies by mode)
 		maxLabelWidth := 0
-		for _, field := range a.dialogFields {
-			if !field.isHidden && len(field.label) > maxLabelWidth {
-				maxLabelWidth = len(field.label)
+		for i, field := range a.dialogFields {
+			if !field.isHidden {
+				label := field.label
+				if i == 1 && a.dialogFields[0].value == "gcloud" {
+					label = "Gcloud Command"
+				}
+				if len(label) > maxLabelWidth {
+					maxLabelWidth = len(label)
+				}
 			}
 		}
 		// Add some padding
@@ -1690,8 +2007,12 @@ func (a *App) View() string {
 		// Add each field
 		for i, field := range a.dialogFields {
 			if !field.isHidden {
-				// Show field label with padding
-				labelContent := field.label + ":"
+				// Show field label with padding (use "Gcloud Command" for field 1 in gcloud mode)
+				fieldLabel := field.label
+				if i == 1 && a.dialogFields[0].value == "gcloud" {
+					fieldLabel = "Gcloud Command"
+				}
+				labelContent := fieldLabel + ":"
 				if i == a.activeField {
 					labelContent = "> " + labelContent
 				} else {
@@ -1732,14 +2053,27 @@ func (a *App) View() string {
 			}
 		}
 
-		if a.dialogFields[0].value == "ssh" {
-			content += "\nFormat: ssh -N -L [bindAddress:]localPort:remoteHost:remotePort [user@host[:port]]\n"
+		// Show inline error if any
+		if a.dialogError != "" {
+			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555")).Bold(true)
+			content += "\n" + errorStyle.Render(a.dialogError) + "\n"
 		}
 
-		content += "\n↑/↓: Change field • Enter: Save • Esc/Ctrl+C: Cancel • /: Toggle SSH mode"
+		switch a.dialogFields[0].value {
+		case "gcloud":
+			content += "\nFormat: gcloud compute ssh INSTANCE --tunnel-through-iap --zone=ZONE [--project=PROJECT] --ssh-flag=\"-N -L [localPort:]remoteHost:remotePort\"\n"
+		case "ssh":
+			content += "\nFormat: ssh -N -L [bindAddress:]localPort:remoteHost:remotePort [user@host[:port]]\n"
+			content += "Or paste a gcloud IAP command (use / to switch to Gcloud mode)\n"
+		}
+		content += "\n↑/↓: Change field • Enter: Save • Esc/Ctrl+C: Cancel • /: Cycle mode (fields → gcloud → ssh)"
 
-		// Center the dialog on screen
-		dialog := dialogStyle.Width(80).Render(content)
+		// Center the dialog on screen at 85% width
+		dialogWidth := a.width * 85 / 100
+		if dialogWidth < 80 {
+			dialogWidth = 80
+		}
+		dialog := dialogStyle.Width(dialogWidth).Render(content)
 		return lipgloss.Place(a.width, a.height,
 			lipgloss.Center, lipgloss.Center,
 			dialog)

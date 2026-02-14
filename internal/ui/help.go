@@ -38,7 +38,8 @@ Filtering
   t: Filter by tag
 
 Management
-  n: Create new tunnel from SSH string
+  n: Create new tunnel (fields mode)
+  G: Create new tunnel in Gcloud mode (paste gcloud IAP command)
   e: Edit selected tunnel
   ⌫: Delete selected tunnel
   o: Open browser to selected tunnel's local port

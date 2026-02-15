@@ -281,6 +281,152 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	}
 }
 
+// connectDirect runs the tunnel in direct IAP mode (no SSH): each accepted
+// connection is forwarded over a new IAP connection to instance:RemotePort.
+func (t *Tunnel) connectDirect() {
+	t.logf("Starting tunnel (direct IAP)")
+
+	t.stopChan = make(chan struct{})
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if t != nil && t.LogChan != nil {
+					t.logf("Metrics updater panic recovered: %v", r)
+				}
+			}
+		}()
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			case <-ticker.C:
+				if t != nil {
+					t.updateMetrics()
+				}
+			}
+		}
+	}()
+
+	t.updateStatus("connecting", "waiting for traffic")
+	for {
+		select {
+		case <-t.stopChan:
+			t.logf("Tunnel stopping")
+			return
+		default:
+		}
+
+		if t.Listener == nil {
+			t.errorf("Listener cannot accept connections")
+			t.updateStatus("error", "cannot accept connections")
+			return
+		}
+
+		t.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
+
+		conn, err := t.Listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			t.logf("Listener closed: %v", err)
+			return
+		}
+		go t.forwardDirect(conn)
+	}
+}
+
+// forwardDirect establishes a direct IAP connection to instance:RemotePort and
+// copies data bidirectionally (no SSH).
+func (t *Tunnel) forwardDirect(localConnection net.Conn) {
+	defer localConnection.Close()
+
+	if t == nil {
+		return
+	}
+
+	select {
+	case <-t.stopChan:
+		t.logf("Tunnel stopping, aborting forward")
+		return
+	default:
+	}
+
+	t.logf("direct IAP: connecting to instance %s port %d", t.Config.Bastion.Host, t.Config.RemotePort)
+	t.updateStatus("connecting", "connecting to instance")
+
+	iapConn, err := dialIAP(context.Background(), t.Config, t)
+	if err != nil {
+		msg := fmt.Sprintf("IAP direct failed: %v", err)
+		t.errorf("%s", msg)
+		t.updateStatus("error", msg)
+		return
+	}
+	defer iapConn.Close()
+
+	t.updateStatus("active", "tunnel established")
+
+	copyConn := func(writer, reader net.Conn, direction string) {
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			default:
+			}
+
+			n, err := reader.Read(buf)
+			if n > 0 {
+				_, werr := writer.Write(buf[:n])
+				if werr != nil {
+					t.logf("Writing %s data: %v", direction, werr)
+					break
+				}
+
+				t.Metrics.mu.Lock()
+				if direction == "upload" {
+					t.Metrics.BytesOut += int64(n)
+				} else {
+					t.Metrics.BytesIn += int64(n)
+				}
+				t.Metrics.mu.Unlock()
+			}
+			if err != nil {
+				if err != io.EOF {
+					t.logf("Reading %s data: %v", direction, err)
+				}
+				break
+			}
+		}
+	}
+
+	done := make(chan bool, 2)
+	go func() {
+		copyConn(iapConn, localConnection, "upload")
+		done <- true
+	}()
+	go func() {
+		copyConn(localConnection, iapConn, "download")
+		done <- true
+	}()
+
+	finished := 0
+	for finished < 2 {
+		select {
+		case <-done:
+			finished++
+		case <-t.stopChan:
+			iapConn.Close()
+			localConnection.Close()
+			return
+		}
+	}
+}
+
 func (t *Tunnel) Stop() {
 	if t.stopChan != nil {
 		close(t.stopChan)

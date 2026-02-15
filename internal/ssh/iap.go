@@ -141,6 +141,12 @@ func dialIAP(ctx context.Context, cfg config.TunnelConfig, t *Tunnel) (net.Conn,
 	if port == 0 {
 		port = 22
 	}
+	if strings.TrimSpace(cfg.GcpIap.Mode) == "direct" {
+		port = cfg.RemotePort
+		if port == 0 {
+			return nil, fmt.Errorf("IAP direct mode requires remote_port")
+		}
+	}
 
 	if project == "" {
 		return nil, fmt.Errorf("IAP requires gcp_iap.project (the GCP project for the tunnel)")

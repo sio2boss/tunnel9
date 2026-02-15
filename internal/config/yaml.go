@@ -8,6 +8,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// userHomeDir is used by GetDefaultConfigPath so tests can inject a failure.
+var userHomeDir = os.UserHomeDir
+
+// yamlMarshal is used by Save so tests can inject a marshal failure.
+var yamlMarshal = yaml.Marshal
+
 type TunnelConfig struct {
 	Name        string `yaml:"name"`
 	LocalPort   int    `yaml:"local_port"`
@@ -28,10 +34,11 @@ type TunnelConfig struct {
 // Project and GcloudConfiguration are required: the tunnel uses that gcloud
 // configuration's account so the identity is authorized for the project.
 type GcpIapConfig struct {
-	Zone                 string `yaml:"zone"`
-	Project              string `yaml:"project,omitempty"`
-	GcloudConfiguration  string `yaml:"gcloud_configuration,omitempty"` // gcloud config name for auth; defaults to project if empty
-	Interface            string `yaml:"interface,omitempty"`            // e.g. "nic0", default used by iapc if empty
+	Mode                string `yaml:"mode,omitempty"`                  // "ssh" (default) or "direct"
+	Zone                string `yaml:"zone"`
+	Project             string `yaml:"project,omitempty"`
+	GcloudConfiguration string `yaml:"gcloud_configuration,omitempty"` // gcloud config name for auth; defaults to project if empty
+	Interface           string `yaml:"interface,omitempty"`             // e.g. "nic0", default used by iapc if empty
 }
 
 type Config struct {
@@ -48,24 +55,26 @@ func NewConfigLoader(path string) *ConfigLoader {
 	}
 }
 
-func GetDefaultConfigPath() string {
-	homeDir, err := os.UserHomeDir()
+// GetDefaultConfigPath returns the default config path under the user's home directory.
+// It returns an error if the home directory cannot be determined (e.g. HOME unset and lookup fails).
+func GetDefaultConfigPath() (string, error) {
+	homeDir, err := userHomeDir()
 	if err != nil {
-		fmt.Println("Error getting home directory:", err)
-		os.Exit(1)
+		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(homeDir, ".local", "state", "tunnel9", "config.yaml")
+	return filepath.Join(homeDir, ".local", "state", "tunnel9", "config.yaml"), nil
 }
 
 // FindConfigFile looks for a config file in the following order:
 // 1. If configPath is provided and file exists, use it
 // 2. Look for .tunnel9.yaml in current directory
 // 3. Fall back to ~/.local/state/tunnel9/config.yaml
-func FindConfigFile(configPath string) string {
+// It returns an error only when falling back to the default path and the home directory cannot be determined.
+func FindConfigFile(configPath string) (string, error) {
 	// If a specific config path is provided, use it
 	if configPath != "" {
 		if _, err := os.Stat(configPath); err == nil {
-			return configPath
+			return configPath, nil
 		}
 	}
 
@@ -74,7 +83,7 @@ func FindConfigFile(configPath string) string {
 	if err == nil {
 		localConfig := filepath.Join(currentDir, ".tunnel9.yaml")
 		if _, err := os.Stat(localConfig); err == nil {
-			return localConfig
+			return localConfig, nil
 		}
 	}
 
@@ -107,7 +116,7 @@ func (c *ConfigLoader) Save(tunnels []TunnelConfig) error {
 		Tunnels: tunnels,
 	}
 
-	data, err := yaml.Marshal(config)
+	data, err := yamlMarshal(config)
 	if err != nil {
 		return fmt.Errorf("error marshaling config: %w", err)
 	}

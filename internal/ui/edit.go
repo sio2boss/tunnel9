@@ -434,6 +434,9 @@ func (a *App) handleDialogKey(msg tea.KeyMsg) bool {
 				field.value = field.value[:field.cursor] + string(msg.Runes) + field.value[field.cursor:]
 			}
 			field.cursor += len(msg.Runes)
+			if a.activeField == 1 {
+				a.syncGcloudFieldsFromCommand()
+			}
 		}
 		return true
 
@@ -446,6 +449,9 @@ func (a *App) handleDialogKey(msg tea.KeyMsg) bool {
 				field.value = field.value[:field.cursor] + " " + field.value[field.cursor:]
 			}
 			field.cursor++
+			if a.activeField == 1 {
+				a.syncGcloudFieldsFromCommand()
+			}
 		}
 		return true
 
@@ -476,6 +482,9 @@ func (a *App) handleDialogKey(msg tea.KeyMsg) bool {
 		if len(field.value) > 0 && field.cursor > 0 {
 			field.value = field.value[:field.cursor-1] + field.value[field.cursor:]
 			field.cursor--
+			if a.activeField == 1 {
+				a.syncGcloudFieldsFromCommand()
+			}
 		}
 		return true
 
@@ -507,11 +516,45 @@ func (a *App) handleDialogKey(msg tea.KeyMsg) bool {
 		field := &a.dialogFields[a.activeField]
 		if field.cursor < len(field.value) {
 			field.value = field.value[:field.cursor] + field.value[field.cursor+1:]
+			if a.activeField == 1 {
+				a.syncGcloudFieldsFromCommand()
+			}
 		}
 		return true
 	}
 
 	return false
+}
+
+// syncGcloudFieldsFromCommand parses the Gcloud Command field (index 1) and, if it
+// looks like a valid gcloud IAP command, populates GCP Zone, GCP Project ID, and
+// GCP gcloud config (fields 11, 12, 13) so they are filled when the user pastes.
+func (a *App) syncGcloudFieldsFromCommand() {
+	if a.activeField != 1 || (a.dialogFields[0].value != "gcloud" && a.dialogFields[0].value != "ssh") {
+		return
+	}
+	input := strings.TrimSpace(a.dialogFields[1].value)
+	if input == "" {
+		return
+	}
+	cfg, err := parse.ParseGcloudSshString(input)
+	if err != nil || cfg == nil {
+		cfg, err = parse.ParseGcloudStartIapTunnel(input)
+		if err != nil || cfg == nil {
+			return
+		}
+	}
+	if cfg.GcpIap == nil {
+		return
+	}
+	a.dialogFields[11].value = cfg.GcpIap.Zone
+	a.dialogFields[11].cursor = len(cfg.GcpIap.Zone)
+	a.dialogFields[12].value = cfg.GcpIap.Project
+	a.dialogFields[12].cursor = len(cfg.GcpIap.Project)
+	if cfg.GcpIap.GcloudConfiguration != "" {
+		a.dialogFields[13].value = cfg.GcpIap.GcloudConfiguration
+		a.dialogFields[13].cursor = len(cfg.GcpIap.GcloudConfiguration)
+	}
 }
 
 // renderDialogView returns the create/edit tunnel dialog content for View().

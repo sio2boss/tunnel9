@@ -89,7 +89,10 @@ func resolveGcloudAccount(configuration string) (string, error) {
 		return "", fmt.Errorf("failed to resolve gcloud account for configuration %q: %w", configuration, err)
 	}
 	if account == "" || account == "(unset)" {
-		return "", fmt.Errorf("no account set in gcloud configuration %q (run 'gcloud --configuration=%s auth login')", configuration, configuration)
+		if configuration != "" {
+			return "", fmt.Errorf("no account set in gcloud configuration %q (run 'gcloud --configuration=%s auth login')", configuration, configuration)
+		}
+		return "", fmt.Errorf("no account set in default gcloud configuration (run 'gcloud auth login')")
 	}
 	return account, nil
 }
@@ -104,10 +107,8 @@ func ResolveIAPUser(cfg config.TunnelConfig) (string, error) {
 	if cfg.GcpIap == nil {
 		return "", nil
 	}
+	// Use gcloud config name if set; otherwise use default/active config (same as gcloud compute ssh).
 	configuration := strings.TrimSpace(cfg.GcpIap.GcloudConfiguration)
-	if configuration == "" {
-		configuration = cfg.GcpIap.Project
-	}
 	account, err := resolveGcloudAccount(configuration)
 	if err != nil {
 		return "", err
@@ -151,10 +152,9 @@ func dialIAP(ctx context.Context, cfg config.TunnelConfig, t *Tunnel) (net.Conn,
 	if project == "" {
 		return nil, fmt.Errorf("IAP requires gcp_iap.project (the GCP project for the tunnel)")
 	}
+	// Use gcloud config name if set; otherwise leave empty so gcloud uses default/active
+	// configuration (same as "gcloud compute ssh" when run without --configuration=).
 	configuration := strings.TrimSpace(cfg.GcpIap.GcloudConfiguration)
-	if configuration == "" {
-		configuration = project
-	}
 
 	// Verify the gcloud account before dialing so problems are visible early
 	account, err := resolveGcloudAccount(configuration)
@@ -164,8 +164,12 @@ func dialIAP(ctx context.Context, cfg config.TunnelConfig, t *Tunnel) (net.Conn,
 
 	// Log the values we're using so problems are visible in the console
 	if t != nil {
+		configLabel := configuration
+		if configLabel == "" {
+			configLabel = "(default)"
+		}
 		t.logf("IAP dial: gcloud_config=%s account=%s project=%s zone=%s instance=%s port=%d interface=%s",
-			configuration, account, project, zone, instance, port, ninterface)
+			configLabel, account, project, zone, instance, port, ninterface)
 	}
 
 	gts := &gcloudTokenSource{configuration: configuration, project: project}

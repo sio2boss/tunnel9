@@ -137,6 +137,16 @@ func ParseGcloudSshString(s string) (*config.TunnelConfig, error) {
 		project = strings.TrimSpace(s[i:end])
 	}
 
+	var gcloudConfig string
+	if i := strings.Index(s, "--configuration="); i >= 0 {
+		i += len("--configuration=")
+		end := i
+		for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != '\n' {
+			end++
+		}
+		gcloudConfig = strings.TrimSpace(s[i:end])
+	}
+
 	parts := strings.Fields(s)
 	var instance string
 	for i := 0; i < len(parts); i++ {
@@ -237,8 +247,9 @@ func ParseGcloudSshString(s string) (*config.TunnelConfig, error) {
 		RemoteHost:  remoteHost,
 		BindAddress: bindAddr,
 		GcpIap: &config.GcpIapConfig{
-			Zone:    zone,
-			Project: project,
+			Zone:                zone,
+			Project:             project,
+			GcloudConfiguration: gcloudConfig,
 		},
 	}
 	tc.Bastion.Host = instance
@@ -282,6 +293,16 @@ func ParseGcloudStartIapTunnel(s string) (*config.TunnelConfig, error) {
 			end++
 		}
 		project = strings.TrimSpace(s[i:end])
+	}
+
+	var gcloudConfig string
+	if i := strings.Index(s, "--configuration="); i >= 0 {
+		i += len("--configuration=")
+		end := i
+		for end < len(s) && s[end] != ' ' && s[end] != '\t' && s[end] != '\n' {
+			end++
+		}
+		gcloudConfig = strings.TrimSpace(s[i:end])
 	}
 
 	parts := strings.Fields(s)
@@ -343,9 +364,10 @@ func ParseGcloudStartIapTunnel(s string) (*config.TunnelConfig, error) {
 		RemoteHost:  "",
 		BindAddress: localHost,
 		GcpIap: &config.GcpIapConfig{
-			Mode:    "direct",
-			Zone:    zone,
-			Project: project,
+			Mode:                "direct",
+			Zone:                zone,
+			Project:             project,
+			GcloudConfiguration: gcloudConfig,
 		},
 	}
 	tc.Bastion.Host = instance

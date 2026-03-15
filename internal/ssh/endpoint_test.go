@@ -1,7 +1,11 @@
 package ssh
 
 import (
+	"errors"
 	"testing"
+	"time"
+
+	"tunnel9/internal/config"
 )
 
 func TestNewEndpointFromString(t *testing.T) {
@@ -281,6 +285,160 @@ func TestEndpointUserParsing(t *testing.T) {
 			}
 			if result.User != tt.expected.User {
 				t.Errorf("expected User %s, got %s", tt.expected.User, result.User)
+			}
+		})
+	}
+}
+
+func TestIsConnectionError(t *testing.T) {
+	tunnel := &Tunnel{Config: config.TunnelConfig{Name: "test"}}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"connection refused", errors.New("connection refused"), true},
+		{"connection reset", errors.New("connection reset by peer"), true},
+		{"broken pipe", errors.New("broken pipe"), true},
+		{"network unreachable", errors.New("network is unreachable"), true},
+		{"no route to host", errors.New("no route to host"), true},
+		{"timeout", errors.New("i/o timeout"), true},
+		{"connection timed out", errors.New("connection timed out"), true},
+		{"ssh disconnect", errors.New("ssh: disconnect"), true},
+		{"ssh connection lost", errors.New("ssh: connection lost"), true},
+		{"closed network connection", errors.New("use of closed network connection"), true},
+		{"other error", errors.New("something else"), false},
+		{"empty string", errors.New(""), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tunnel.isConnectionError(tt.err)
+			if got != tt.want {
+				t.Errorf("isConnectionError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		bytes float64
+		want  string
+	}{
+		{0, "0.0 B/s"},
+		{100, "100.0 B/s"},
+		{1024, "1.0 KB/s"},
+		{1536, "1.5 KB/s"},
+		{1024 * 1024, "1.0 MB/s"},
+		{1024 * 1024 * 1024, "1.0 GB/s"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.bytes)
+		if got != tt.want {
+			t.Errorf("formatBytes(%v) = %q, want %q", tt.bytes, got, tt.want)
+		}
+	}
+}
+
+func TestFormatLatency(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "n/a"},
+		{-1, "n/a"},
+		{time.Millisecond, "1ms"},
+		{50 * time.Millisecond, "50ms"},
+		{time.Second, "1000ms"},
+	}
+	for _, tt := range tests {
+		got := formatLatency(tt.d)
+		if got != tt.want {
+			t.Errorf("formatLatency(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
+func TestFigureOutRemoteVsBastion(t *testing.T) {
+	makeCfg := func(bastionHost string, bastionPort int, remoteHost string, remotePort int) config.TunnelConfig {
+		cfg := config.TunnelConfig{RemoteHost: remoteHost, RemotePort: remotePort}
+		cfg.Bastion.Host = bastionHost
+		cfg.Bastion.Port = bastionPort
+		return cfg
+	}
+	tests := []struct {
+		name           string
+		cfg            config.TunnelConfig
+		wantSSHHost    string
+		wantSSHPort    int
+		wantRemoteHost string
+		wantRemotePort int
+	}{
+		{
+			name:           "bastion mode",
+			cfg:            makeCfg("jump.example.com", 22, "db.internal", 5432),
+			wantSSHHost:    "jump.example.com", wantSSHPort: 22,
+			wantRemoteHost: "db.internal", wantRemotePort: 5432,
+		},
+		{
+			name:           "no bastion - direct remote",
+			cfg:            config.TunnelConfig{RemoteHost: "svc.local", RemotePort: 8080},
+			wantSSHHost:    "svc.local", wantSSHPort: 22,
+			wantRemoteHost: "localhost", wantRemotePort: 8080,
+		},
+		{
+			name:           "bastion with custom port",
+			cfg:            makeCfg("jump", 2222, "db", 5432),
+			wantSSHHost:    "jump", wantSSHPort: 2222,
+			wantRemoteHost: "db", wantRemotePort: 5432,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sshEp, remoteEp := figureOutRemoteVsBastion(tt.cfg)
+			if sshEp.Host != tt.wantSSHHost || sshEp.Port != tt.wantSSHPort {
+				t.Errorf("SSH endpoint = %s:%d, want %s:%d", sshEp.Host, sshEp.Port, tt.wantSSHHost, tt.wantSSHPort)
+			}
+			if remoteEp.Host != tt.wantRemoteHost || remoteEp.Port != tt.wantRemotePort {
+				t.Errorf("remote endpoint = %s:%d, want %s:%d", remoteEp.Host, remoteEp.Port, tt.wantRemoteHost, tt.wantRemotePort)
+			}
+		})
+	}
+}
+
+func TestResolveIAPUser(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.TunnelConfig
+		want string
+	}{
+		{
+			name: "Bastion.User set returns as-is",
+			cfg:  func() config.TunnelConfig { c := config.TunnelConfig{}; c.Bastion.User = "myuser"; return c }(),
+			want: "myuser",
+		},
+		{
+			name: "GcpIap nil returns empty",
+			cfg:  config.TunnelConfig{},
+			want: "",
+		},
+		{
+			name: "GcpIap set but Bastion.User set returns Bastion.User",
+			cfg:  func() config.TunnelConfig { c := config.TunnelConfig{GcpIap: &config.GcpIapConfig{}}; c.Bastion.User = "override"; return c }(),
+			want: "override",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveIAPUser(tt.cfg)
+			if err != nil {
+				t.Errorf("ResolveIAPUser: %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ResolveIAPUser() = %q, want %q", got, tt.want)
 			}
 		})
 	}

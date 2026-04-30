@@ -1,10 +1,14 @@
 package ssh
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sio2boss/ssh_config"
@@ -25,6 +29,57 @@ func loadPrivateKey(t *Tunnel, keyPath string) (ssh.AuthMethod, error) {
 	}
 
 	return ssh.PublicKeys(signer), nil
+}
+
+type knownHosts struct {
+	t    *Tunnel
+	file string
+}
+
+func (k *knownHosts) Callback() ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		// Parse known_hosts file
+		file, err := os.Open(k.file)
+		if err != nil {
+			// If known_hosts doesn't exist, warn but allow connection
+			k.t.logf("Warning: %s not found, accepting host key", k.file)
+			return nil
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" || line[0] == '#' {
+				continue
+			}
+
+			fields := strings.Fields(line)
+			if len(fields) < 3 {
+				continue
+			}
+
+				// Check if hostname matches
+			hostPattern := fields[0]
+			if hostPattern == hostname || hostPattern == "*" || strings.HasPrefix(hostPattern, "*.") {
+				// Compare key type
+				keyType := fields[1]
+
+				if key.Type() == keyType {
+					expectedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+					if err == nil {
+						if bytes.Equal(key.Marshal(), expectedKey.Marshal()) {
+							return nil
+						}
+					}
+				}
+			}
+		}
+
+		// Host not found in known_hosts, warn and allow
+		k.t.logf("Warning: %s not found in known_hosts, accepting host key", hostname)
+		return nil
+	}
 }
 
 func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
@@ -105,7 +160,7 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 	config := &ssh.ClientConfig{
 		User:            sshUser,
 		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
+		HostKeyCallback: (&knownHosts{t: t, file: filepath.Join(home, ".ssh", "known_hosts")}).Callback(),
 		Timeout:         10 * time.Second,
 	}
 

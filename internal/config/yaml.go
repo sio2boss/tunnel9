@@ -90,19 +90,6 @@ func (c *ConfigLoader) Load() ([]TunnelConfig, error) {
 	return config.Tunnels, nil
 }
 
-	data, err := os.ReadFile(cleanPath)
-	if err != nil {
-		return []TunnelConfig{}, err
-	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-
-	return config.Tunnels, nil
-}
-
 func (c *ConfigLoader) Save(tunnels []TunnelConfig) error {
 	config := Config{
 		Tunnels: tunnels,

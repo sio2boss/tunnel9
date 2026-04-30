@@ -41,7 +41,11 @@ func main() {
 	}
 
 	// Find the appropriate config file using fallback logic
-	configPath = config.FindConfigFile(configPath)
+	configPath, err = config.FindConfigFile(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
 
 	// Validate config path to prevent path traversal attacks
 	cleanPath := filepath.Clean(configPath)

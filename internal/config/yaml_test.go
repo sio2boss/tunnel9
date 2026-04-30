@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -240,13 +242,13 @@ func TestConfigLoader_LoadNonExistentFile(t *testing.T) {
 }
 
 func TestGetDefaultConfigPath(t *testing.T) {
-	path := GetDefaultConfigPath()
-
+	path, err := GetDefaultConfigPath()
+	if err != nil {
+		t.Fatalf("GetDefaultConfigPath: %v", err)
+	}
 	if path == "" {
 		t.Error("default config path should not be empty")
 	}
-
-	// Should contain expected structure
 	expectedParts := []string{".local", "state", "tunnel9", "config.yaml"}
 	for _, part := range expectedParts {
 		if !containsPathPart(path, part) {
@@ -255,9 +257,189 @@ func TestGetDefaultConfigPath(t *testing.T) {
 	}
 }
 
+func TestGetDefaultConfigPath_HomeDirError(t *testing.T) {
+	old := userHomeDir
+	defer func() { userHomeDir = old }()
+	userHomeDir = func() (string, error) {
+		return "", errors.New("injected home dir error")
+	}
+	path, err := GetDefaultConfigPath()
+	if err == nil {
+		t.Errorf("GetDefaultConfigPath expected error, got path %q", path)
+	}
+	if path != "" {
+		t.Errorf("GetDefaultConfigPath on error should return empty path, got %q", path)
+	}
+}
+
 // Helper function to check if path contains a specific part
 func containsPathPart(path, part string) bool {
 	// Simple string contains check for path components
 	return filepath.Base(path) == part ||
 		filepath.Dir(path) != "." && containsPathPart(filepath.Dir(path), part)
+}
+
+func TestFindConfigFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tunnel9-findconfig-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 1. Explicit path that exists
+	explicitPath := filepath.Join(tempDir, "custom.yaml")
+	if err := os.WriteFile(explicitPath, []byte("tunnels: []"), 0644); err != nil {
+		t.Fatalf("failed to write explicit config: %v", err)
+	}
+	got, err := FindConfigFile(explicitPath)
+	if err != nil {
+		t.Fatalf("FindConfigFile(existing path): %v", err)
+	}
+	if got != explicitPath {
+		t.Errorf("FindConfigFile(existing path) = %q, want %q", got, explicitPath)
+	}
+
+	// 2. Explicit path that does not exist: should fall back (default path)
+	got, err = FindConfigFile(filepath.Join(tempDir, "nonexistent.yaml"))
+	if err != nil {
+		t.Fatalf("FindConfigFile(nonexistent): %v", err)
+	}
+	if got == "" {
+		t.Error("FindConfigFile(nonexistent) should not return empty")
+	}
+	if !containsPathPart(got, "config.yaml") {
+		t.Errorf("fallback should point at config.yaml, got %q", got)
+	}
+
+	// 3. Empty string: look for .tunnel9.yaml in cwd, then fallback
+	localConfig := filepath.Join(tempDir, ".tunnel9.yaml")
+	if err := os.WriteFile(localConfig, []byte("tunnels: []"), 0644); err != nil {
+		t.Fatalf("failed to write .tunnel9.yaml: %v", err)
+	}
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+	got, err = FindConfigFile("")
+	if err != nil {
+		t.Fatalf("FindConfigFile(\"\") with .tunnel9.yaml in cwd: %v", err)
+	}
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	wantResolved, _ := filepath.EvalSymlinks(localConfig)
+	if gotResolved != wantResolved {
+		t.Errorf("FindConfigFile(\"\") with .tunnel9.yaml in cwd = %q, want %q", got, localConfig)
+	}
+}
+
+func TestFindConfigFile_HomeDirError(t *testing.T) {
+	old := userHomeDir
+	defer func() { userHomeDir = old }()
+	userHomeDir = func() (string, error) {
+		return "", errors.New("injected")
+	}
+	tempDir, err := os.MkdirTemp("", "tunnel9-findconfig-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	origWd, _ := os.Getwd()
+	os.Chdir(tempDir)
+	defer os.Chdir(origWd)
+	// No .tunnel9.yaml, so FindConfigFile falls back to GetDefaultConfigPath which will fail
+	_, err = FindConfigFile("")
+	if err == nil {
+		t.Error("FindConfigFile(\"\") expected error when home dir fails")
+	}
+}
+
+func TestConfigLoader_SaveCreatesDirectory(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tunnel9-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Save to a path under a subdirectory that does not exist yet
+	configPath := filepath.Join(tempDir, "subdir", "nested", "config.yaml")
+	loader := NewConfigLoader(configPath)
+	tunnels := []TunnelConfig{
+		{Name: "one", LocalPort: 8080, RemotePort: 80, RemoteHost: "host", Tag: "x"},
+	}
+	if err := loader.Save(tunnels); err != nil {
+		t.Fatalf("Save to new directory failed: %v", err)
+	}
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Error("config file was not created under new directory")
+	}
+	loaded, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Name != "one" {
+		t.Errorf("loaded config mismatch: got %v", loaded)
+	}
+}
+
+func TestConfigLoader_Save_MkdirAllFails(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tunnel9-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	// Create a file (not a directory); saving under it will make MkdirAll fail
+	blocker := filepath.Join(tempDir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to create blocker file: %v", err)
+	}
+	configPath := filepath.Join(blocker, "sub", "config.yaml")
+	loader := NewConfigLoader(configPath)
+	err = loader.Save([]TunnelConfig{{Name: "x", LocalPort: 1, RemotePort: 2, RemoteHost: "h", Tag: "t"}})
+	if err == nil {
+		t.Error("Save expected error when parent is a file")
+	}
+	if err != nil && !strings.Contains(err.Error(), "creating config directory") {
+		t.Errorf("Save error should mention creating config directory: %v", err)
+	}
+}
+
+func TestConfigLoader_Save_WriteFileFails(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tunnel9-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	// Save to a path that is an existing directory; WriteFile will fail
+	loader := NewConfigLoader(tempDir)
+	err = loader.Save([]TunnelConfig{{Name: "x", LocalPort: 1, RemotePort: 2, RemoteHost: "h", Tag: "t"}})
+	if err == nil {
+		t.Error("Save expected error when path is a directory")
+	}
+	if err != nil && !strings.Contains(err.Error(), "writing config") {
+		t.Errorf("Save error should mention writing config: %v", err)
+	}
+}
+
+func TestConfigLoader_Save_MarshalFails(t *testing.T) {
+	old := yamlMarshal
+	defer func() { yamlMarshal = old }()
+	yamlMarshal = func(interface{}) ([]byte, error) {
+		return nil, errors.New("injected marshal error")
+	}
+	tempDir, err := os.MkdirTemp("", "tunnel9-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	loader := NewConfigLoader(filepath.Join(tempDir, "config.yaml"))
+	err = loader.Save([]TunnelConfig{{Name: "x", LocalPort: 1, RemotePort: 2, RemoteHost: "h", Tag: "t"}})
+	if err == nil {
+		t.Error("Save expected error when marshal fails")
+	}
+	if err != nil && !strings.Contains(err.Error(), "marshaling config") {
+		t.Errorf("Save error should mention marshaling config: %v", err)
+	}
 }

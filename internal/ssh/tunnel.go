@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -41,22 +42,32 @@ type TunnelOptions struct {
 type Tunnel struct {
 	ID         string
 	Client     *ssh.Client
+	iapConn    net.Conn     // underlying IAP connection when using GcpIap; closed in Stop()
 	Config     config.TunnelConfig
 	LogChan    chan string
 	StatusChan chan TunnelStatus
 	Listener   net.Listener
 	Metrics    TunnelMetrics
 	stopChan   chan struct{} // Add stop channel for clean shutdown
-	clientMu   sync.RWMutex  // Protect SSH client access
+	clientMu   sync.RWMutex  // Protect SSH client and iapConn access
+}
+
+// safeSend sends on a channel, recovering from panics caused by
+// sending on a closed channel during shutdown.
+func safeSend[T any](ch chan T, val T) {
+	defer func() { recover() }()
+	if ch != nil {
+		ch <- val
+	}
 }
 
 func (t *Tunnel) updateStatus(state string, message string) {
-	if t != nil && t.StatusChan != nil {
-		t.StatusChan <- TunnelStatus{
+	if t != nil {
+		safeSend(t.StatusChan, TunnelStatus{
 			ID:      t.ID,
 			State:   state,
 			Message: message,
-		}
+		})
 	}
 }
 
@@ -66,9 +77,7 @@ func (t *Tunnel) logf(format string, args ...interface{}) {
 	}
 
 	msg := fmt.Sprintf("DEBUG [%s] %s", t.Config.Name, fmt.Sprintf(format, args...))
-	if t.LogChan != nil {
-		t.LogChan <- fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg)
-	}
+	safeSend(t.LogChan, fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg))
 }
 
 func (t *Tunnel) errorf(format string, args ...interface{}) {
@@ -77,9 +86,7 @@ func (t *Tunnel) errorf(format string, args ...interface{}) {
 	}
 
 	msg := fmt.Sprintf("ERROR [%s] %s", t.Config.Name, fmt.Sprintf(format, args...))
-	if t.LogChan != nil {
-		t.LogChan <- fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg)
-	}
+	safeSend(t.LogChan, fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), msg))
 	t.updateStatus("error", "failed, see logs")
 }
 
@@ -274,12 +281,162 @@ func (t *Tunnel) connect(sshconfig *ssh.ClientConfig) {
 	}
 }
 
+// connectDirect runs the tunnel in direct IAP mode (no SSH): each accepted
+// connection is forwarded over a new IAP connection to instance:RemotePort.
+func (t *Tunnel) connectDirect() {
+	t.logf("Starting tunnel (direct IAP)")
+
+	t.stopChan = make(chan struct{})
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if t != nil && t.LogChan != nil {
+					t.logf("Metrics updater panic recovered: %v", r)
+				}
+			}
+		}()
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			case <-ticker.C:
+				if t != nil {
+					t.updateMetrics()
+				}
+			}
+		}
+	}()
+
+	t.updateStatus("connecting", "waiting for traffic")
+	for {
+		select {
+		case <-t.stopChan:
+			t.logf("Tunnel stopping")
+			return
+		default:
+		}
+
+		if t.Listener == nil {
+			t.errorf("Listener cannot accept connections")
+			t.updateStatus("error", "cannot accept connections")
+			return
+		}
+
+		t.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
+
+		conn, err := t.Listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			t.logf("Listener closed: %v", err)
+			return
+		}
+		go t.forwardDirect(conn)
+	}
+}
+
+// forwardDirect establishes a direct IAP connection to instance:RemotePort and
+// copies data bidirectionally (no SSH).
+func (t *Tunnel) forwardDirect(localConnection net.Conn) {
+	defer localConnection.Close()
+
+	if t == nil {
+		return
+	}
+
+	select {
+	case <-t.stopChan:
+		t.logf("Tunnel stopping, aborting forward")
+		return
+	default:
+	}
+
+	t.logf("direct IAP: connecting to instance %s port %d", t.Config.Bastion.Host, t.Config.RemotePort)
+	t.updateStatus("connecting", "connecting to instance")
+
+	iapConn, err := dialIAP(context.Background(), t.Config, t)
+	if err != nil {
+		msg := fmt.Sprintf("IAP direct failed: %v", err)
+		t.errorf("%s", msg)
+		t.updateStatus("error", msg)
+		return
+	}
+	defer iapConn.Close()
+
+	t.updateStatus("active", "tunnel established")
+
+	copyConn := func(writer, reader net.Conn, direction string) {
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			default:
+			}
+
+			n, err := reader.Read(buf)
+			if n > 0 {
+				_, werr := writer.Write(buf[:n])
+				if werr != nil {
+					t.logf("Writing %s data: %v", direction, werr)
+					break
+				}
+
+				t.Metrics.mu.Lock()
+				if direction == "upload" {
+					t.Metrics.BytesOut += int64(n)
+				} else {
+					t.Metrics.BytesIn += int64(n)
+				}
+				t.Metrics.mu.Unlock()
+			}
+			if err != nil {
+				if err != io.EOF {
+					t.logf("Reading %s data: %v", direction, err)
+				}
+				break
+			}
+		}
+	}
+
+	done := make(chan bool, 2)
+	go func() {
+		copyConn(iapConn, localConnection, "upload")
+		done <- true
+	}()
+	go func() {
+		copyConn(localConnection, iapConn, "download")
+		done <- true
+	}()
+
+	finished := 0
+	for finished < 2 {
+		select {
+		case <-done:
+			finished++
+		case <-t.stopChan:
+			iapConn.Close()
+			localConnection.Close()
+			return
+		}
+	}
+}
+
 func (t *Tunnel) Stop() {
 	if t.stopChan != nil {
 		close(t.stopChan)
 	}
 
 	t.clientMu.Lock()
+	if t.iapConn != nil {
+		t.iapConn.Close()
+		t.iapConn = nil
+	}
 	if t.Client != nil {
 		t.Client.Close()
 		t.Client = nil
@@ -337,6 +494,10 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 	if needsHealthCheck && !t.isSSHClientHealthy() {
 		t.logf("SSH client appears unhealthy, closing and reconnecting")
 		t.clientMu.Lock()
+		if t.iapConn != nil {
+			t.iapConn.Close()
+			t.iapConn = nil
+		}
 		if t.Client != nil {
 			t.Client.Close()
 			t.Client = nil
@@ -351,16 +512,43 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 		isFirstConnect = true
 		t.logf("connecting to SSH server (1/2): %s", sshEndpoint.String())
 		t.updateStatus("connecting", "connecting to server")
-		client, err := ssh.Dial("tcp", sshEndpoint.String(), sshconfig)
-		if err != nil {
-			t.errorf("SSH connection failed: %v (user: %s, address: %s)", err, sshconfig.User, sshEndpoint)
-			t.updateStatus("error", fmt.Sprintf("SSH connection failed: %v", err))
-			if t.Client != nil {
-				t.Client.Close()
-				t.Client = nil
+
+		var client *ssh.Client
+		if t.Config.GcpIap != nil {
+			// Use GCP IAP tunnel then SSH over it
+			t.logf("IAP: project=%s zone=%s instance=%s port=%d user=%s",
+				t.Config.GcpIap.Project, t.Config.GcpIap.Zone,
+				t.Config.Bastion.Host, t.Config.Bastion.Port, sshconfig.User)
+			iapConn, err := dialIAP(context.Background(), t.Config, t)
+			if err != nil {
+				msg := fmt.Sprintf("IAP failed [project=%s]: %v", t.Config.GcpIap.Project, err)
+				t.errorf("%s", msg)
+				t.updateStatus("error", msg)
+				t.clientMu.Unlock()
+				return
 			}
-			t.clientMu.Unlock()
-			return
+			t.iapConn = iapConn
+			t.logf("IAP tunnel established, starting SSH handshake as user=%s", sshconfig.User)
+			conn, chans, reqs, err := ssh.NewClientConn(iapConn, sshEndpoint.String(), sshconfig)
+			if err != nil {
+				t.iapConn.Close()
+				t.iapConn = nil
+				msg := fmt.Sprintf("SSH over IAP failed (user: %s): %v", sshconfig.User, err)
+				t.errorf("%s", msg)
+				t.updateStatus("error", msg)
+				t.clientMu.Unlock()
+				return
+			}
+			client = ssh.NewClient(conn, chans, reqs)
+		} else {
+			var err error
+			client, err = ssh.Dial("tcp", sshEndpoint.String(), sshconfig)
+			if err != nil {
+				t.errorf("SSH connection failed: %v (user: %s, address: %s)", err, sshconfig.User, sshEndpoint)
+				t.updateStatus("error", fmt.Sprintf("SSH connection failed: %v", err))
+				t.clientMu.Unlock()
+				return
+			}
 		}
 		t.Client = client
 	}
@@ -406,6 +594,10 @@ func (t *Tunnel) forward(localConnection net.Conn, sshconfig *ssh.ClientConfig) 
 			t.updateStatus("error", fmt.Sprintf("remote connection failed: %v", err))
 			// Close and nil the client so next connection will create a fresh one
 			t.clientMu.Lock()
+			if t.iapConn != nil {
+				t.iapConn.Close()
+				t.iapConn = nil
+			}
 			if t.Client != nil {
 				t.Client.Close()
 				t.Client = nil

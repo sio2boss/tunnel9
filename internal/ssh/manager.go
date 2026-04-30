@@ -3,6 +3,7 @@ package ssh
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 	"tunnel9/internal/config"
 )
@@ -84,29 +85,36 @@ func (tm *TunnelManager) CreateTunnel(id string, config config.TunnelConfig) *Tu
 }
 
 func (tm *TunnelManager) StartTunnel(tunnel *Tunnel) error {
-	// Get SSH config
-	sshconfig, err := GetSSHConfig(tunnel)
-	if err != nil {
-		tunnel.errorf("failed to get SSH config")
-		return fmt.Errorf("failed to get SSH config")
-	}
-
-	// Start local listener
-	localEndpoint := NewEndpoint(tunnel.Config.BindAddress, tunnel.Config.LocalPort, "localhost")
-	tunnel.Listener, err = net.Listen("tcp", localEndpoint.String())
-	if err != nil {
-		tunnel.errorf("failed to listen on port %d", tunnel.Config.LocalPort)
-		return fmt.Errorf("failed to listen on port %d", tunnel.Config.LocalPort)
-	}
-
 	// Start goroutine to forward tunnel logs to manager's log channel
+	// (must be before any calls that might log, so messages aren't lost)
 	go func() {
 		for msg := range tunnel.LogChan {
 			tm.LogChan <- msg
 		}
 	}()
 
-	// Start the tunnel
+	// Start local listener
+	localEndpoint := NewEndpoint(tunnel.Config.BindAddress, tunnel.Config.LocalPort, "localhost")
+	listener, err := net.Listen("tcp", localEndpoint.String())
+	if err != nil {
+		tunnel.errorf("failed to listen on port %d: %v", tunnel.Config.LocalPort, err)
+		return fmt.Errorf("failed to listen on port %d: %w", tunnel.Config.LocalPort, err)
+	}
+	tunnel.Listener = listener
+
+	// Direct IAP: no SSH config; connectDirect() dials IAP per connection
+	if tunnel.Config.GcpIap != nil && strings.TrimSpace(tunnel.Config.GcpIap.Mode) == "direct" {
+		go tunnel.connectDirect()
+		return nil
+	}
+
+	// SSH or SSH-over-IAP: need SSH config
+	sshconfig, err := GetSSHConfig(tunnel)
+	if err != nil {
+		tunnel.errorf("failed to get SSH config: %v", err)
+		return fmt.Errorf("failed to get SSH config: %w", err)
+	}
+
 	go tunnel.connect(sshconfig)
 
 	return nil

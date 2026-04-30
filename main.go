@@ -43,15 +43,22 @@ func main() {
 	// Find the appropriate config file using fallback logic
 	configPath = config.FindConfigFile(configPath)
 
-	// Ensure config directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	// Validate config path to prevent path traversal attacks
+	cleanPath := filepath.Clean(configPath)
+	if cleanPath != configPath {
+		fmt.Printf("Error: Invalid config path (potential path traversal): %s\n", configPath)
+		os.Exit(1)
+	}
+
+	// Ensure config directory exists with secure permissions
+	configDir := filepath.Dir(cleanPath)
+	if err := os.MkdirAll(configDir, 0700); err != nil {
 		fmt.Printf("Error creating config directory %s: %v\n", configDir, err)
 		os.Exit(1)
 	}
 
 	// Load configuration
-	loader := config.NewConfigLoader(configPath)
+	loader := config.NewConfigLoader(cleanPath)
 	tunnels, err := loader.Load()
 	if err != nil {
 		fmt.Println("Unable to load configuration")

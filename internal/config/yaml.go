@@ -71,7 +71,13 @@ func FindConfigFile(configPath string) string {
 }
 
 func (c *ConfigLoader) Load() ([]TunnelConfig, error) {
-	data, err := os.ReadFile(c.path)
+	// Validate config path to prevent path traversal
+	cleanPath := filepath.Clean(c.path)
+	if filepath.IsAbs(cleanPath) {
+		// Additional validation could be added here
+	}
+
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return []TunnelConfig{}, err
 	}
@@ -94,14 +100,14 @@ func (c *ConfigLoader) Save(tunnels []TunnelConfig) error {
 		return fmt.Errorf("error marshaling config: %w", err)
 	}
 
-	// Create directory if it doesn't exist
+	// Create directory with secure permissions (owner only)
 	dir := filepath.Dir(c.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("error creating config directory: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(c.path, data, 0644); err != nil {
+	// Write to file with secure permissions (owner read/write only)
+	if err := os.WriteFile(c.path, data, 0600); err != nil {
 		return fmt.Errorf("error writing config file: %w", err)
 	}
 

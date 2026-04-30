@@ -11,7 +11,7 @@ require (
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
 	github.com/google/uuid v1.6.0
 	github.com/sio2boss/ssh_config v0.0.0-20250129161636-b665f588968b
-	golang.org/x/crypto v0.43.0
+	golang.org/x/crypto v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

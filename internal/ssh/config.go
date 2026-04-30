@@ -35,13 +35,13 @@ type knownHosts struct {
 	file string
 }
 
-func (k *knownHosts) Callback() ssh.HostKeyCallback {
+func (k *knownHosts) Callback(t *Tunnel) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		// Parse known_hosts file
 		file, err := os.Open(k.file)
 		if err != nil {
 			// If known_hosts doesn't exist, warn but allow connection
-			fmt.Printf("Warning: %s not found, accepting host key\n", k.file)
+			t.logf("Warning: %s not found, accepting host key", k.file)
 			return nil
 		}
 		defer file.Close()
@@ -58,7 +58,7 @@ func (k *knownHosts) Callback() ssh.HostKeyCallback {
 				continue
 			}
 
-				// Check if hostname matches
+			// Check if hostname matches
 			hostPattern := fields[0]
 			if hostPattern == hostname || hostPattern == "*" || strings.HasPrefix(hostPattern, "*.") {
 				// Compare key type
@@ -76,7 +76,7 @@ func (k *knownHosts) Callback() ssh.HostKeyCallback {
 		}
 
 		// Host not found in known_hosts, warn and allow
-		fmt.Printf("Warning: %s not found in known_hosts, accepting host key\n", hostname)
+		t.logf("Warning: %s not found in known_hosts, accepting host key", hostname)
 		return nil
 	}
 }
@@ -159,7 +159,7 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 	config := &ssh.ClientConfig{
 		User:            sshUser,
 		Auth:            auths,
-		HostKeyCallback: (&knownHosts{file: filepath.Join(home, ".ssh", "known_hosts")}).Callback(),
+		HostKeyCallback: (&knownHosts{file: filepath.Join(home, ".ssh", "known_hosts")}).Callback(t),
 		Timeout:         10 * time.Second,
 	}
 

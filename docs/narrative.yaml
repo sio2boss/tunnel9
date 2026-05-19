@@ -145,7 +145,7 @@ architectural:
       type: 'App'
       description: >
         The top-level local application for managing SSH tunnels from a terminal interface.
-        Composed of the TUI, configuration, parsing, SSH, and tunnel runtime subsystems.
+        Composed of the TUI, configuration, parsing, SSH/IAP, and tunnel runtime subsystems.
       status: 'done'
 
       value:
@@ -166,7 +166,7 @@ architectural:
             - name: 'Dialog and Help Module'
               type: 'Module'
               value: >
-                Implements create/edit/delete tunnel flows, input mode switching (fields/ssh),
+                Implements create/edit/delete tunnel flows, input mode switching (fields/ssh/gcloud),
                 and in-app help content.
               status: 'done'
 
@@ -186,13 +186,14 @@ architectural:
         - name: 'Parsing Subsystem'
           type: 'Subsystem'
           description: >
-            Parses SSH command strings into normalized tunnel configuration models.
+            Parses SSH and gcloud command strings into normalized tunnel configuration models.
           status: 'done'
           value:
             - name: 'Connection String Parser Module'
               type: 'Module'
               value: >
-                Converts SSH command formats into tunnel definitions.
+                Converts ssh -L, gcloud compute ssh --tunnel-through-iap, and
+                gcloud compute start-iap-tunnel command formats into tunnel definitions.
               status: 'done'
 
         - name: 'Tunnel Runtime Subsystem'
@@ -215,10 +216,10 @@ architectural:
                 latency checks, and reconnection/error handling.
               status: 'done'
 
-        - name: 'SSH Subsystem'
+        - name: 'SSH and IAP Subsystem'
           type: 'Subsystem'
           description: >
-            Handles SSH client setup and connection behavior for direct or bastion modes.
+            Handles SSH client setup and optional Google Cloud IAP dialing for bastion or direct modes.
           status: 'done'
           value:
             - name: 'SSH Config Resolution Module'
@@ -226,6 +227,13 @@ architectural:
               value: >
                 Resolves SSH user, host, port, identity files, and host key callback behavior from
                 local SSH configuration and tunnel settings.
+              status: 'done'
+
+            - name: 'IAP Connectivity Module'
+              type: 'Module'
+              value: >
+                Uses gcloud-backed token retrieval and IAP dialing to establish proxy connections for
+                SSH-over-IAP and direct start-iap-tunnel style forwarding.
               status: 'done'
 
 
@@ -290,13 +298,14 @@ features:
 
         - name: 'Command-string parsing'
           description: >
-            Supports parsing of SSH command formats into normalized tunnel entries.
+            Supports parsing of `ssh -L`, `gcloud compute ssh --tunnel-through-iap`, and
+            `gcloud compute start-iap-tunnel` formats into normalized tunnel entries.
           status: 'done'
           value:
             - name: 'Mode-aware dialog parsing'
               value: >
-                Input mode cycling (`fields`, `ssh`) allows users to paste commands directly or edit structured fields.
-                Parsed values auto-populate structured tunnel fields when available.
+                Input mode cycling (`fields`, `gcloud`, `ssh`) allows users to paste commands directly or edit structured fields.
+                Parsed values auto-populate GCP/IAP fields when available.
               status: 'done'
             - name: 'Input validation and normalization'
               value: >
@@ -306,7 +315,7 @@ features:
 
     - name: 'Connection Semantics'
       description: >
-        Establishes consistent endpoint and transport behavior across direct SSH and bastion modes.
+        Establishes consistent endpoint and transport behavior across direct SSH, bastion, and IAP-based modes.
       status: 'done'
       value:
         - name: 'Endpoint normalization'

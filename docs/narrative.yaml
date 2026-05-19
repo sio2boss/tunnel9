@@ -1,0 +1,404 @@
+---
+title: tunnel9 Narrative
+
+definitions:
+  name: Definitions
+  description: >
+    Descriptions of terms used within this file and their meaning or desired interpretation.
+  value:
+
+    - name: "App"
+      value: >
+        When we refer to this project by the name App, we imply this entire functionality
+        as manifested within the current git repository.  By default every concept is
+        connected to the App unless specifically tied to another concept.
+
+    - name: "Status"
+      description: >
+        The status of a feature or component.
+      value:
+        - name: 'idea'
+          value: 'An idea for a feature or component'
+        - name: 'in-progress'
+          value: 'A feature or component that is being worked on'
+        - name: 'partial'
+          value: 'A feature or component that is partially complete'
+        - name: 'review'
+          value: 'A feature or component that is being reviewed by the user'
+        - name: 'done'
+          value: 'A feature or component that is complete'
+
+    - name: "Framework"
+      value: >
+        A collection of software that is a dependency of an [[App]].
+
+    - name: "Module"
+      value: >
+        A non-visual component of the application that serves as an organizational
+        block of code and functionality.
+
+    - name: "Subsystem"
+      value: >
+        A sufficiently large collection of logic and functionality that it needs to be
+        separately managed. Generally a collection of [[Module]] elements.
+
+    - name: "Service"
+      value: >
+        A networked piece of logic which might consist of multiple [[Subsystem]] and/or [[Module]] elements.
+        Services interact with external systems, APIs, or network resources.
+
+    - name: "Component"
+      value: >
+        A user interface element that encapsulates display and interaction logic.
+        Can be a web/HTML component, a React component, or a TUI component.
+
+    - name: "Screen"
+      value: >
+        A full user-visible view composed of [[Component]] elements, such as a web page
+        or a TUI screen/state.
+
+    - name: "Page"
+      value: >
+        A screen shown to the user, composed of [[Component]] elements. An existing
+        concept from the selected [[Framework]].
+
+    - name: "DataModel"
+      value: >
+        The shape of data managed by the [[App]], manifested as a struct or interface.
+        The singular unit transferring data between [[Module]], [[Component]], 
+        [[Subsystem]] or any other part of a software product.
+
+    - name: "Storage"
+      value: >
+        The persistent capture of [[DataModel]], generally a database. Usually a [[Subsystem]].
+
+    - name: "State"
+      value: >
+        The in-memory representation of [[DataModel]], sometimes also persisted via [[Storage]].
+
+    - name: "Feature"
+      value: >
+        A core operation, presentation, or behavior of the [[App]] that is essential to the user's experience.
+
+    - name: "Flourish"
+      value: >
+        A decorative or ergonomic enhancement layered on top of a [[Feature]]. Not required for core
+        function — the underlying [[Feature]] is always accessible without it.
+
+
+general:
+  name: General
+  description: 'General information about the product'
+  value:
+
+    - name: 'Name'
+      value: 'tunnel9'
+      description: 'The product name used for branding and identification'
+
+    - name: 'Description'
+      value: 'A terminal user interface (TUI) for managing SSH tunnels. Tunnel9 provides a simple, efficient way to manage multiple SSH port forwarding configurations with real-time monitoring of throughput and latency.'
+      description: 'Concise explanation of the product and its primary purpose'
+
+    - name: 'Motivation'
+      value: >
+        tunnel9 exists because manual SSH tunnel commands are painful to remember and difficult
+        to maintain on a per-project basis.
+      description: 'The core reason this product exists'
+
+    - name: 'Target Audience'
+      value: 'Software Developers'
+      description: 'Primary user segments the product is designed to serve'
+
+
+technical:
+  name: Technical
+  description: 'Technology stack — interpreted as an allowlist and set of defaults for implementation.'
+  value:
+
+    - name: 'Primary Language'
+      description: 'The main programming language'
+      value: 'Go'
+
+    - name: 'Build Framework'
+      description: 'The application framework'
+      value: 'Go (standard toolchain with Makefile)'
+
+    - name: 'UI Framework'
+      description: 'Library for building user interfaces'
+      value: 'Bubble Tea (with Bubbles and Lipgloss)'
+
+    - name: 'Storage'
+      description: 'Database or persistence layer'
+      value: 'YAML file-based config at ./.tunnel9.yaml or ~/.local/state/tunnel9/config.yaml'
+
+    - name: 'Testing'
+      description: 'Test framework and approach — unit, integration, and e2e'
+      value: 'gotestsum'
+
+
+architectural:
+  name: Architectural
+  description: 'Top-down decomposition of the system into Services, Subsystems, and Modules.'
+  value:
+
+    - name: 'Tunnel9 Application'
+      type: 'App'
+      description: >
+        The top-level local application for managing SSH tunnels from a terminal interface.
+        Composed of the TUI, configuration, parsing, SSH/IAP, and tunnel runtime subsystems.
+      status: 'done'
+
+      value:
+        - name: 'TUI Subsystem'
+          type: 'Subsystem'
+          description: >
+            Handles interactive terminal rendering, keyboard controls, dialogs, filtering, sorting,
+            and visibility of tunnel logs and metrics.
+          status: 'done'
+          value:
+            - name: 'App Module'
+              type: 'Module'
+              value: >
+                Maintains application state, table rendering, command handling, and status/log updates
+                delivered from the tunnel manager.
+              status: 'done'
+
+            - name: 'Dialog and Help Module'
+              type: 'Module'
+              value: >
+                Implements create/edit/delete tunnel flows, input mode switching (fields/ssh/gcloud),
+                and in-app help content.
+              status: 'done'
+
+        - name: 'Configuration Subsystem'
+          type: 'Subsystem'
+          description: >
+            Handles loading, validating, locating, and persisting tunnel definitions in YAML files.
+          status: 'done'
+          value:
+            - name: 'YAML Config Module'
+              type: 'Module'
+              value: >
+                Resolves default and local config paths, unmarshals and marshals tunnel records,
+                and writes config files with restricted permissions.
+              status: 'done'
+
+        - name: 'Parsing Subsystem'
+          type: 'Subsystem'
+          description: >
+            Parses SSH and gcloud command strings into normalized tunnel configuration models.
+          status: 'done'
+          value:
+            - name: 'Connection String Parser Module'
+              type: 'Module'
+              value: >
+                Converts ssh -L, gcloud compute ssh --tunnel-through-iap, and
+                gcloud compute start-iap-tunnel command formats into tunnel definitions.
+              status: 'done'
+
+        - name: 'Tunnel Runtime Subsystem'
+          type: 'Subsystem'
+          description: >
+            Manages tunnel lifecycle, status transitions, connection retries, metrics, and cleanup.
+          status: 'done'
+          value:
+            - name: 'Tunnel Manager Module'
+              type: 'Module'
+              value: >
+                Creates, starts, stops, and tracks tunnel instances while forwarding logs and
+                status events to the TUI.
+              status: 'done'
+
+            - name: 'Tunnel Transport Module'
+              type: 'Module'
+              value: >
+                Performs listener accept loops, bi-directional forwarding, throughput tracking,
+                latency checks, and reconnection/error handling.
+              status: 'done'
+
+        - name: 'SSH and IAP Subsystem'
+          type: 'Subsystem'
+          description: >
+            Handles SSH client setup and optional Google Cloud IAP dialing for bastion or direct modes.
+          status: 'done'
+          value:
+            - name: 'SSH Config Resolution Module'
+              type: 'Module'
+              value: >
+                Resolves SSH user, host, port, identity files, and host key callback behavior from
+                local SSH configuration and tunnel settings.
+              status: 'done'
+
+            - name: 'IAP Connectivity Module'
+              type: 'Module'
+              value: >
+                Uses gcloud-backed token retrieval and IAP dialing to establish proxy connections for
+                SSH-over-IAP and direct start-iap-tunnel style forwarding.
+              status: 'done'
+
+
+features:
+  name: Features
+  description: 'Top-down decomposition of capabilities into Features and Sub-features, each referencing the architectural components they touch.'
+  value:
+
+    - name: 'Tunnel Lifecycle Management'
+      description: >
+        Allows users to create, start, stop, monitor, and remove SSH tunnels from one terminal UI.
+        Delivered through [[Tunnel9 Application]], primarily via the [[TUI Subsystem]] and [[Tunnel Runtime Subsystem]].
+      status: 'done'
+
+      value:
+        - name: 'Start and stop tunnels'
+          description: >
+            Enables toggling a selected tunnel and bulk start/stop actions.
+            Uses [[Tunnel Manager Module]] and [[Tunnel Transport Module]] to manage runtime state.
+          status: 'done'
+          value:
+            - name: 'Per-tunnel toggle'
+              value: >
+                When a tunnel row is selected, pressing Enter toggles stopped/error tunnels to connecting/active
+                and active/connecting tunnels to stopped.
+                Runtime changes are driven by [[Tunnel Manager Module]] and reflected in [[App Module]].
+              status: 'done'
+
+            - name: 'Bulk lifecycle actions'
+              value: >
+                Shift+A starts all stopped/error tunnels and Shift+C stops all active/connecting tunnels.
+                The action logs outcomes and keeps UI state synchronized as status events arrive.
+              status: 'done'
+
+        - name: 'Tunnel CRUD'
+          value: >
+            Users can add, edit, and delete tunnel definitions from dialogs in the TUI.
+            Persisted through [[YAML Config Module]].
+          status: 'done'
+
+    - name: 'Configuration and Input Flexibility'
+      description: >
+        Allows users to define tunnel targets in the format they already use and persist per-project or user-level configuration.
+        Depends on [[Configuration Subsystem]] and [[Parsing Subsystem]].
+      status: 'done'
+      value:
+        - name: 'YAML-backed configuration'
+          description: >
+            Loads tunnels from `--config`, local `./.tunnel9.yaml`, or default user config path, and saves updates safely.
+          status: 'done'
+          value:
+            - name: 'Secure config persistence'
+              value: >
+                Config directories are created with restricted permissions and writes use owner-only file permissions.
+                This keeps local tunnel definitions private by default.
+              status: 'done'
+            - name: 'Config discovery and failure handling'
+              value: >
+                Configuration lookup follows a deterministic priority order and handles missing files,
+                invalid YAML, and persistence errors with explicit failure paths.
+              status: 'done'
+
+        - name: 'Command-string parsing'
+          description: >
+            Supports parsing of `ssh -L`, `gcloud compute ssh --tunnel-through-iap`, and
+            `gcloud compute start-iap-tunnel` formats into normalized tunnel entries.
+          status: 'done'
+          value:
+            - name: 'Mode-aware dialog parsing'
+              value: >
+                Input mode cycling (`fields`, `gcloud`, `ssh`) allows users to paste commands directly or edit structured fields.
+                Parsed values auto-populate GCP/IAP fields when available.
+              status: 'done'
+            - name: 'Input validation and normalization'
+              value: >
+                Parser behavior normalizes multiline/whitespace-heavy command pastes and rejects malformed
+                mappings or incomplete required fields before runtime.
+              status: 'done'
+
+    - name: 'Connection Semantics'
+      description: >
+        Establishes consistent endpoint and transport behavior across direct SSH, bastion, and IAP-based modes.
+      status: 'done'
+      value:
+        - name: 'Endpoint normalization'
+          value: >
+            Host/user/port inputs are normalized into consistent endpoint models used by the runtime and UI,
+            including fallback/default handling where applicable.
+          status: 'done'
+        - name: 'Connection-state resilience'
+          value: >
+            Runtime behavior classifies common connection failure patterns and maintains predictable state
+            transitions for reconnect/error handling.
+          status: 'done'
+
+    - name: 'Operational Visibility and Navigation'
+      description: >
+        Helps users operate many tunnels quickly with clear status, metrics, logs, and navigation controls.
+        Delivered by [[TUI Subsystem]] and fed by [[Tunnel Runtime Subsystem]].
+      status: 'done'
+      value:
+        - name: 'Real-time status and metrics'
+          value: >
+            Displays per-tunnel state (`[x]`, `[~]`, `[✓]`, `[!]`) plus throughput and latency metrics updated continuously.
+          status: 'done'
+        - name: 'Filtering, sorting, and layout control'
+          value: >
+            Users can filter by tags, sort by table columns, and switch compact/wide views to manage larger tunnel sets.
+          status: 'done'
+        - name: 'Log console'
+          value: >
+            Toggleable log console supports scrolling, optional per-tunnel filtering, and auto-scroll mode.
+          status: 'done'
+        - name: 'In-app help overlay'
+          value: >
+            A dedicated help screen (`h`) documents controls, status indicators, and workflows so keyboard-driven
+            operations remain discoverable without external documentation.
+          status: 'done'
+        - name: 'Privacy mode masking'
+          value: >
+            Privacy mode (`p`) masks host and bind values in the table to reduce accidental exposure during demos,
+            screen sharing, or public workspace use.
+          status: 'done'
+
+
+flourishes:
+  name: Flourishes
+  description: 'Ergonomic and aesthetic enhancements layered on top of completed Features. Each flourish is gated by the feature it enhances.'
+  value:
+
+    - name: 'Terminal Interaction Design'
+      description: >
+        A consistent terminal-first interaction model focused on speed, readability, and low-friction operation.
+        Built on top of [[Operational Visibility and Navigation]] in the [[TUI Subsystem]].
+      status: 'done'
+
+      value:
+        - name: 'Status-first table presentation'
+          value: >
+            Tunnel states, key table columns, and status messages are presented with clear visual hierarchy
+            so users can scan health and routing details quickly.
+
+        - name: 'Compact and wide layouts'
+          value: >
+            Users can toggle between compact and wide table modes to optimize for terminal width and tunnel volume.
+
+    - name: 'Keyboard Navigation'
+      value: >
+        Keyboard shortcuts are a primary operational interface for [[Tunnel Lifecycle Management]] and
+        [[Operational Visibility and Navigation]].
+        Core shortcuts include row navigation (`↑/↓`), toggle (`Enter`), create/edit/delete (`n`, `e`, `Backspace`),
+        filtering (`t`), sorting (`<`, `>`, `r`), console controls (`l`, `f`, `pgup`, `pgdown`), and bulk actions (`A`, `C`).
+        Discoverability is preserved through inline control hints and an in-app help overlay (`h`).
+      status: 'done'
+
+    - name: 'Operational Comfort'
+      value: >
+        Quality-of-life controls reduce operational risk and repetitive effort during daily use.
+        Includes open-local-endpoint shortcut (`o`) and per-tunnel log filtering to narrow debugging context
+        while many tunnels are active.
+      status: 'done'
+
+    - name: 'Visual Branding Consistency'
+      value: >
+        Non-core visual conventions make tunnel state and interaction intent recognizable at a glance.
+        Uses consistent status iconography (`[x]`, `[~]`, `[✓]`, `[!]`) and stable accent colors across
+        headers, dialogs, and control hints to reinforce operator confidence.
+      status: 'done'

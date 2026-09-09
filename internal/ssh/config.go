@@ -13,6 +13,7 @@ import (
 
 	"github.com/sio2boss/ssh_config"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 func loadPrivateKey(t *Tunnel, keyPath string) (ssh.AuthMethod, error) {
@@ -81,6 +82,39 @@ func (k *knownHosts) Callback(t *Tunnel) ssh.HostKeyCallback {
 	}
 }
 
+// expandHome resolves a leading "~" the way ssh(1) does.
+func expandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// agentAuthMethod returns an auth method backed by the running ssh-agent, or
+// nil when there is no agent to talk to.
+func agentAuthMethod(t *Tunnel) ssh.AuthMethod {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return nil
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.logf("ssh-agent at %s not reachable: %v", sock, err)
+		return nil
+	}
+	ag := agent.NewClient(conn)
+	keys, err := ag.List()
+	if err != nil {
+		t.logf("ssh-agent gave no keys: %v", err)
+		return nil
+	}
+	t.logf("Using ssh-agent with %d key(s)", len(keys))
+	return ssh.PublicKeysCallback(ag.Signers)
+}
+
 func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 	// Find home directory
 	home, err := os.UserHomeDir()
@@ -110,10 +144,14 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 
 	// We will resolve this host in the SSH config file
 	lookupHost := &t.Config.Bastion.Host
+	// The Port from the SSH config is the port we SSH to, never the port of the
+	// service being forwarded. With no bastion, figureOutRemoteVsBastion reads
+	// the SSH port from Bastion.Port (defaulting to 22) and forwards to
+	// localhost:RemotePort, so this must land on Bastion.Port either way --
+	// pointing it at RemotePort would send every tunnel to the remote's sshd.
 	lookupPort := &t.Config.Bastion.Port
 	if t.Config.Bastion.Host == "" {
 		lookupHost = &t.Config.RemoteHost
-		lookupPort = &t.Config.RemotePort
 	}
 
 	// Load SSH config file
@@ -141,10 +179,15 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 				sshUser = user
 			}
 
-			// Add identity file to auths
+			// Add identity file to auths. The SSH config keeps these paths as
+			// written, so "~/.ssh/id_ed25519" arrives literally and os.ReadFile
+			// would never find it.
 			if identityFiles, _ := sshConfig.GetAll(*lookupHost, "IdentityFile"); len(identityFiles) > 0 {
 				t.logf("Overriding identity with %d files from SSH config", len(identityFiles))
-				keyPaths = identityFiles
+				keyPaths = nil
+				for _, p := range identityFiles {
+					keyPaths = append(keyPaths, expandHome(p, home))
+				}
 			}
 
 			// override lookupHost with HostName from SSH config
@@ -162,6 +205,12 @@ func GetSSHConfig(t *Tunnel) (*ssh.ClientConfig, error) {
 			t.logf("Loaded identity file: %s", keyPath)
 			auths = append(auths, auth)
 		}
+	}
+
+	// An encrypted or absent key file is normal when the user works through an
+	// agent; without this the handshake offers no method at all and fails.
+	if agentAuth := agentAuthMethod(t); agentAuth != nil {
+		auths = append(auths, agentAuth)
 	}
 
 	config := &ssh.ClientConfig{
